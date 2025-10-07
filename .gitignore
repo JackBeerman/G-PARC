@@ -7,14 +7,7 @@
 *.onnx
 *.bin
 
-# === Model folders ===
-models/
-checkpoints/
-weights/
-artifacts/
-
 # === Data files ===
-data/
 *.csv
 *.npy
 *.npz
