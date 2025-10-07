@@ -19,6 +19,9 @@ data/
 *.npy
 *.npz
 *.gif
+*.csv
+*.err
+*.out
 
 # === Python and environment ===
 __pycache__/
