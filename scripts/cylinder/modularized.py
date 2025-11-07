@@ -273,7 +273,7 @@ def main():
         directory=train_dir,
         simulation_ids=train_ids,
         seq_len=args.seq_len,
-        stride=3,
+        stride=2,
         num_static_feats=args.num_static_feats,
         num_dynamic_feats=args.num_dynamic_feats
     )
@@ -282,7 +282,7 @@ def main():
         directory=val_dir,
         simulation_ids=val_ids,
         seq_len=args.seq_len,
-        stride=3,
+        stride=2,
         num_static_feats=args.num_static_feats,
         num_dynamic_feats=args.num_dynamic_feats
     )
@@ -291,7 +291,7 @@ def main():
         directory=test_dir,
         simulation_ids=test_ids,
         seq_len=args.seq_len,
-        stride=3,
+        stride=2,
         num_static_feats=args.num_static_feats,
         num_dynamic_feats=args.num_dynamic_feats
     )

@@ -6,9 +6,9 @@
 #SBATCH -p gpu                      
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --constraint=a100_80gb
-#SBATCH -t 00:20:00                  
+#SBATCH -t 03:20:00                  
 #SBATCH -c 4                        
-#SBATCH --mem=32G                   
+#SBATCH --mem=232G                   
 
 # Load modules
 module purge
@@ -19,21 +19,19 @@ module load apptainer
 EVAL_MODE="directory"  # Change to "files" to test specific files
 
 # Define paths
-MODEL_PATH="/standard/sds_baek_energetic/von_karman_vortex/Reynolds 1~150/parc_model/train_20251006_230126_large_300_3/shock_tube_best_model.pth"
+MODEL_PATH="/standard/sds_baek_energetic/von_karman_vortex/processed_multi_dir/parc_model/train_20251027_180814_large_150_6/shock_tube_best_model.pth"
 
 # For directory mode
-TEST_DIR="/standard/sds_baek_energetic/von_karman_vortex/Reynolds 1~150/processed_parc/normalized/train"
+TEST_DIR="/standard/sds_baek_energetic/von_karman_vortex/full_data/split_normalized/test"
 
 # For specific files mode - update these paths as needed
 SPECIFIC_FILES=(
-"/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/train_cases_normalized/p_L_137500_rho_L_2.0_train_with_pos_normalized.pt"
-"/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/train_cases_normalized/p_L_112500_rho_L_1.25_train_with_pos_normalized.pt"
 )
 
 OUTPUT_DIR="/standard/sds_baek_energetic/von_karman_vortex/Reynolds 1~150/parc_model/eval/file_$(date +%Y%m%d_%H%M%S)_large"
 
 # Container path
-CONTAINER="/share/resources/containers/apptainer/pytorch-2.4.0.sif"
+CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # Model architecture parameters (updated for new configurable solver architecture)
 SEQ_LEN=1
@@ -44,20 +42,20 @@ SKIP_INDICES="3 4 5"       # Skip the third variable (0-indexed)
 # Feature extractor parameters
 HIDDEN_CHANNELS=256
 FEATURE_OUT_CHANNELS=128
-DEPTH=6
-HEADS=8
+DEPTH=5
+HEADS=2
 DROPOUT=0.1
 
 # Derivative solver parameters
 DERIV_HIDDEN_CHANNELS=256
-DERIV_NUM_LAYERS=5
-DERIV_HEADS=8
+DERIV_NUM_LAYERS=4
+DERIV_HEADS=2
 DERIV_DROPOUT=0.1
 
 # Integral solver parameters
 INTEGRAL_HIDDEN_CHANNELS=256
-INTEGRAL_NUM_LAYERS=5
-INTEGRAL_HEADS=8
+INTEGRAL_NUM_LAYERS=4
+INTEGRAL_HEADS=2
 INTEGRAL_DROPOUT=0.1
 
 # Rollout evaluation parameters

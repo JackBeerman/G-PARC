@@ -18,10 +18,10 @@ module load apptainer
 EVAL_MODE="directory"  # Change to "files" to test specific files
 
 # Define paths
-MODEL_PATH="/project/vil_baek/psaap/tennis/training_files/tennis_training_20250927_124220/shock_tube_best_model.pth"
+MODEL_PATH="/project/vil_baek/psaap/tennis/training_files/tennis_training_20251008_123120_sinner/tennis_serve_best_model.pth"
 
 # For directory mode
-TEST_DIR="/project/vil_baek/psaap/tennis/seq_tennis_data_normalized/test"
+TEST_DIR="/project/vil_baek/psaap/tennis/player_jannik_sinner_data/test"
 
 # For specific files mode - update these paths as needed
 SPECIFIC_FILES=(

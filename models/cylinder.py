@@ -18,42 +18,6 @@ from utilities.embed import SimulationConditionedLayerNorm, GlobalParameterProce
 from differentiator.differentiator import DerivativeGNN
 from integrator.integrator import IntegralGNN
 
-#def print_tensor_stats(tensor, name, pbar=None):
-#    """
-#    Helper function to print tensor statistics for debugging.
-#    Uses tqdm.write() or a flushed print statement.
-#    CORRECTED to handle NaN in the mean format string.
-#    """
-#    if not torch.is_tensor(tensor):
-#        message = f"DEBUG: {name} is not a tensor."
-#        if pbar: pbar.write(message)
-#        else: print(message, flush=True)
-#        return
-#    
-#    tensor = tensor.detach().cpu()
-#    has_nan = torch.isnan(tensor).any().item()
-#    has_inf = torch.isinf(tensor).any().item()
-#
-#    # [FIX] Pre-calculate the mean string to avoid format errors
-#    if has_nan:
-#        mean_str = "NaN"
-#    else:
-#        mean_str = f"{tensor.mean().item():.4f}"
-#    
-#    message = (
-#        f"\n{'*'*80}\n"
-#        f"***** DEBUG CHECK: {name:<25} | "
-#        f"shape: {str(tensor.shape):<20} | "
-#        f"nan: {has_nan:<5} | "
-#        f"inf: {has_inf:<5} | "
-#        f"mean: {mean_str}" # Use the safe string here
-#        f"\n{'*'*80}"
-#    )
-#    
-#    if pbar:
-#        pbar.write(message)
-#    else:
-#        print(message, flush=True)
 
 class GPARC(nn.Module):
     """
@@ -127,43 +91,3 @@ class GPARC(nn.Module):
             F_prev = F_pred
             
         return predictions
-    #def forward(self, data_list):
-    #    predictions = []
-    #    F_prev = None
-#
-    #    first_data = data_list[0]
-    #    
-    #    # Changed: Use global_params (Reynolds number) instead of global_pressure/density/delta_t
-    #    global_attrs = first_data.global_params.flatten()  # Shape: [1]
-    #    global_embed = self.global_processor(global_attrs)
-#
-    #    # Static features are processed once per simulation sequence
-    #    static_feats_0 = first_data.x[:, :self.num_static_feats]
-    #    edge_index_0 = first_data.edge_index
-    #    learned_static_features = self.feature_extractor(static_feats_0, edge_index_0)
-    #    learned_static_features = self.feature_norm(learned_static_features, global_attrs)
-    #    
-    #    # Recurrently process each timestep in the sequence
-    #    for data in data_list:
-    #        x = data.x
-    #        edge_index = data.edge_index
-#
-    #        num_raw_dynamic = self.num_dynamic_feats + len(self.skip_dynamic_indices)
-    #        all_dynamic_feats = x[:, self.num_static_feats:self.num_static_feats + num_raw_dynamic]
-    #        keep_indices = [i for i in range(all_dynamic_feats.shape[1]) if i not in self.skip_dynamic_indices]
-    #        dynamic_feats_t = all_dynamic_feats[:, keep_indices]
-    #        
-    #        F_prev_used = dynamic_feats_t if F_prev is None else F_prev
-    #        F_prev_used = self.derivative_norm(F_prev_used, global_attrs)
-#
-    #        global_context = global_embed.unsqueeze(0).repeat(data.num_nodes, 1)
-    #        Fdot_input = torch.cat([learned_static_features, F_prev_used, global_context], dim=-1)
-#
-    #        Fdot = self.derivative_solver(Fdot_input, edge_index)
-    #        Fint = self.integral_solver(Fdot, edge_index)
-    #        F_pred = F_prev_used + Fint
-    #        
-    #        predictions.append(F_pred)
-    #        F_prev = F_pred
-#
-    #    return predictions

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-HPC Training Script for GPARC Shock Tube Model
+HPC Training Script for GPARC Tennis Model
 ==============================================
 
-This script trains the integrated GPARC model on shock tube simulation data
-using the ShockTubeRolloutDataset class. Optimized for HPC environments with
+This script trains the integrated GPARC model on tennis serve data
+using the TennisRolloutDataset class. Optimized for HPC environments with
 proper argument parsing, logging, and checkpointing.
 
 Usage:
-    python hpc_gparc_training.py --train_dir /path/to/train --val_dir /path/to/val --test_dir /path/to/test --epochs 50 --lr 1e-4
+    python modularized.py --train_dir /path/to/train --val_dir /path/to/val --test_dir /path/to/test --epochs 50 --lr 1e-4
+    
+    # With multi-step context (recommended for pose prediction)
+    python modularized.py --train_dir /path/to/train --val_dir /path/to/val --test_dir /path/to/test --epochs 50 --lr 1e-4 --num_context_steps 3
     
 For SLURM submission:
     sbatch --gres=gpu:1 --time=24:00:00 python hpc_gparc_training.py
@@ -45,7 +48,7 @@ from data.tennisDataset import TennisServeRolloutDataset, get_simulation_ids
 # NEW: Import the refactored model components
 from utilities.featureextractor import FeatureExtractorGNN
 from utilities.embed import SimulationConditionedLayerNorm, GlobalParameterProcessor, GlobalModulatedGNN
-from utilities.trainer import train_and_validate, load_model, plot_loss_curves
+from utilities.trainer import train_and_validate, train_and_validate_with_context, load_model, plot_loss_curves
 from differentiator.differentiator import DerivativeGNN
 from integrator.integrator import IntegralGNN
 from models.tennisv2 import GPARC
@@ -145,7 +148,7 @@ def create_model_with_configurable_solvers(args):
 ################################################################################
 
 def main():
-    parser = argparse.ArgumentParser(description="Train GPARC model on shock tube data")
+    parser = argparse.ArgumentParser(description="Train GPARC model on tennis serve data")
     
     # Data arguments
     parser.add_argument("--train_dir", type=str, required=True,
@@ -187,6 +190,8 @@ def main():
                         help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="Learning rate")
+    parser.add_argument("--num_context_steps", type=int, default=0,
+                        help="Number of initial context steps (0 = single-step, 3+ = multi-step context)")
     
     # System arguments
     parser.add_argument("--device", type=str, default="auto",
@@ -354,26 +359,42 @@ def main():
         f.write(f"\n  Skipping dynamic indices: {args.skip_dynamic_indices}")
         f.write(f"\n  Using {args.num_dynamic_feats} dynamic features after skipping")
     
-    # Training - using your original method
+    # Training - choose method based on num_context_steps
     logger.info("Starting training...")
-    best_model_path = output_dir / "shock_tube_best_model.pth"
+    best_model_path = output_dir / "tennis_serve_best_model.pth"
     
-    train_losses, val_losses = train_and_validate(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        device=device,
-        num_epochs=args.epochs,
-        lr=args.lr,
-        best_model_path=str(best_model_path)
-    )
+    if args.num_context_steps > 0:
+        # Use multi-step context training (recommended for pose prediction)
+        logger.info(f"Using multi-step context training with {args.num_context_steps} initial timesteps")
+        train_losses, val_losses = train_and_validate_with_context(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+            num_epochs=args.epochs,
+            lr=args.lr,
+            best_model_path=str(best_model_path),
+            num_context_steps=args.num_context_steps
+        )
+    else:
+        # Use single-step training (original method)
+        logger.info("Using single-step training (give t=0, predict full sequence)")
+        train_losses, val_losses = train_and_validate(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+            num_epochs=args.epochs,
+            lr=args.lr,
+            best_model_path=str(best_model_path)
+        )
     
     # Plot results using your original function
-    plot_path = output_dir / "shock_tube_loss_curves.png"
+    plot_path = output_dir / "tennis_serve_loss_curves.png"
     plot_loss_curves(
         train_losses, 
         val_losses, 
-        title="Shock Tube Training & Validation Loss",
+        title="Tennis Serve Training & Validation Loss",
         save_path=str(plot_path)
     )
     logger.info(f"Training curves saved to: {plot_path}")
@@ -383,6 +404,7 @@ def main():
         'train_losses': train_losses,
         'val_losses': val_losses,
         'best_val_loss': min(val_losses),
+        'num_context_steps': args.num_context_steps,
         'args': args
     }
     

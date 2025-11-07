@@ -8,6 +8,7 @@
 *.bin
 
 # === Data files ===
+*.txt
 *.csv
 *.npy
 *.npz
