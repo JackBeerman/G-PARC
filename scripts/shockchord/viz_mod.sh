@@ -32,7 +32,7 @@ SPECIFIC_FILES=(
 OUTPUT_DIR="/project/vil_baek/psaap/rollout_evaluation_varydt_params$(date +%Y%m%d_%H%M%S)_test_mod"
 
 # Container path
-CONTAINER="/share/resources/containers/apptainer/pytorch-2.4.0.sif"
+CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # Model architecture parameters (updated for new configurable solver architecture)
 SEQ_LEN=1

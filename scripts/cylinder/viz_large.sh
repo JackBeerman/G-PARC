@@ -19,7 +19,7 @@ module load apptainer
 EVAL_MODE="directory"  # Change to "files" to test specific files
 
 # Define paths
-MODEL_PATH="/standard/sds_baek_energetic/von_karman_vortex/processed_multi_dir/parc_model/train_20251027_180814_large_150_6/shock_tube_best_model.pth"
+MODEL_PATH="/standard/sds_baek_energetic/von_karman_vortex/processed_multi_dir/parc_model/train_large_75_4/shock_tube_best_model.pth"
 
 # For directory mode
 TEST_DIR="/standard/sds_baek_energetic/von_karman_vortex/full_data/split_normalized/test"
@@ -28,7 +28,7 @@ TEST_DIR="/standard/sds_baek_energetic/von_karman_vortex/full_data/split_normali
 SPECIFIC_FILES=(
 )
 
-OUTPUT_DIR="/standard/sds_baek_energetic/von_karman_vortex/Reynolds 1~150/parc_model/eval/file_$(date +%Y%m%d_%H%M%S)_large"
+OUTPUT_DIR="/standard/sds_baek_energetic/von_karman_vortex/Reynolds 1~150/parc_model/eval/file_large"
 
 # Container path
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"

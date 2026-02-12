@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic       
-#SBATCH -J gparc_shock_tube_mod        
+#SBATCH -J gparc_shock_tube_modv2        
 #SBATCH -o %x.out                   
 #SBATCH -e %x.err                   
 #SBATCH -p gpu                      
 #SBATCH --gres=gpu:a100:1           
-#SBATCH -t 28:14:00                 
+#SBATCH -t 68:14:00                 
 #SBATCH -c 4                        
 #SBATCH --mem=80G                   
 
@@ -17,15 +17,15 @@ module load apptainer
 TRAIN_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/train_cases_normalized"
 VAL_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/val_cases_normalized"
 TEST_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/test_cases_normalized"
-OUTPUT_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/shock_tube_$(date +%Y%m%d_%H%M%S)_run_mod10_750"
+OUTPUT_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/shock_tube_$(date +%Y%m%d_%H%M%S)_run_mod4_300V2"
 
 # Container path
-CONTAINER="/share/resources/containers/apptainer/pytorch-2.4.0.sif"
+CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # Training arguments
-NUM_EPOCHS=150
-SEQ_LEN=10
-LR=5e-5
+NUM_EPOCHS=300
+SEQ_LEN=4
+LR=1e-5
 NUM_STATIC_FEATS=2
 NUM_DYNAMIC_FEATS=3  # Changed from 4 to 3 (after skipping meaningless variable)
 SKIP_INDICES="2"     # Skip the third variable (0-indexed)
@@ -60,12 +60,11 @@ echo "Integral solver: ${INTEGRAL_NUM_LAYERS} layers, ${INTEGRAL_HIDDEN_CHANNELS
 
 # Run with container
 apptainer run --nv "$CONTAINER" \
-  modularized.py \
+  new_mod.py \
     --train_dir "$TRAIN_DIR" \
     --val_dir "$VAL_DIR" \
     --test_dir "$TEST_DIR" \
     --output_dir "$OUTPUT_DIR" \
-    --resume "/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/shock_tube_20250926_091112_run_mod10_600/shock_tube_best_model.pth" \
     --epochs "$NUM_EPOCHS" \
     --seq_len "$SEQ_LEN" \
     --lr "$LR" \

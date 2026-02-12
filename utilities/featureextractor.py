@@ -1,8 +1,10 @@
 # featureextractor.py
-
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATConv, GraphUNet
+from torch_geometric.nn import GATConv, GraphUNet, GraphConv, GINEConv
+
+
 
 class FeatureExtractorGNN(nn.Module):
     """
@@ -126,4 +128,195 @@ class RobustFeatureExtractorGNN(nn.Module):
         x = self.lin_out(x)
         
         return x
+
+
+
+
+class GraphConvFeatureExtractor(nn.Module):
+    """GraphConv feature extractor for stiff mechanics."""
     
+    def __init__(
+        self, 
+        in_channels, 
+        hidden_channels, 
+        out_channels, 
+        num_layers=4,
+        dropout=0.0,
+    ):
+        super().__init__()
+        
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+        self.num_layers = num_layers
+        self.dropout = dropout
+        
+        self.input_proj = nn.Linear(in_channels, hidden_channels)
+        
+        self.convs = nn.ModuleList()
+        self.convs.append(GraphConv(in_channels, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.convs.append(GraphConv(hidden_channels, hidden_channels))
+        self.convs.append(GraphConv(hidden_channels, out_channels))
+        
+        self._init_weights()
+        
+    def _init_weights(self):
+        for conv in self.convs:
+            if hasattr(conv, 'lin_rel'):
+                nn.init.xavier_uniform_(conv.lin_rel.weight, gain=0.5)
+            if hasattr(conv, 'lin_root'):
+                nn.init.xavier_uniform_(conv.lin_root.weight, gain=0.5)
+        nn.init.xavier_uniform_(self.input_proj.weight, gain=0.5)
+        nn.init.zeros_(self.input_proj.bias)
+        
+    def forward(self, x, edge_index):
+        x_res = self.input_proj(x)
+        
+        x = self.convs[0](x, edge_index)
+        x = F.relu(x)
+        x = x + x_res
+        
+        for conv in self.convs[1:-1]:
+            x_res = x
+            x = conv(x, edge_index)
+            x = F.relu(x)
+            if self.dropout > 0 and self.training:
+                x = F.dropout(x, p=self.dropout)
+            x = x + x_res
+        
+        x = self.convs[-1](x, edge_index)
+        return x
+
+class GraphConvFeatureExtractorV2(nn.Module):
+    """
+    Improved Feature Extractor for G-PARC:
+    - GINEConv: Anisotropic message passing using relative node positions.
+    - LayerNorm: Stabilizes latent features and prevents activation explosion.
+    - Deep Residuals: Supports stable training for deeper architectures.
+    """
+    
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers=4,
+        dropout=0.0,
+        use_layer_norm=True,
+        use_relative_pos=True,
+    ):
+        super().__init__()
+        self.use_layer_norm = use_layer_norm
+        self.use_relative_pos = use_relative_pos
+        self.dropout = dropout
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+        
+        # Initial node feature projection
+        self.input_proj = nn.Linear(in_channels, hidden_channels)
+        
+        # Edge feature MLP (for relative position vectors dx, dy)
+        if use_relative_pos:
+            self.edge_encoder = nn.Sequential(
+                nn.Linear(2, hidden_channels),
+                nn.ReLU(),
+                nn.Linear(hidden_channels, hidden_channels),
+            )
+        
+        # Message passing layers
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        
+        for i in range(num_layers):
+            if use_relative_pos:
+                mlp = nn.Sequential(
+                    nn.Linear(hidden_channels, hidden_channels),
+                    nn.ReLU(),
+                    nn.Linear(hidden_channels, hidden_channels),
+                )
+                self.convs.append(GINEConv(mlp, edge_dim=hidden_channels))
+            else:
+                self.convs.append(GraphConv(hidden_channels, hidden_channels))
+            
+            if use_layer_norm:
+                self.norms.append(nn.LayerNorm(hidden_channels))
+        
+        # Final output projection
+        self.final_proj = nn.Linear(hidden_channels, out_channels)
+        
+        # Output LayerNorm
+        if use_layer_norm:
+            self.output_norm = nn.LayerNorm(out_channels)
+        
+        # Residual projection for final layer (hidden -> out)
+        if hidden_channels != out_channels:
+            self.res_proj = nn.Linear(hidden_channels, out_channels)
+        else:
+            self.res_proj = None
+    
+    def forward(self, x, edge_index, pos=None):
+        """
+        Args:
+            x: Input node features [N, in_channels] (usually normalized pos)
+            edge_index: Graph connectivity [2, E]
+            pos: Optional positions for dX calculation (defaults to x[:, :2])
+        
+        Returns:
+            Node embeddings [N, out_channels]
+        """
+        if pos is None:
+            pos = x[:, :2]
+        
+        # 1. Edge Feature Preparation (relative positions)
+        edge_attr = None
+        if self.use_relative_pos:
+            row, col = edge_index
+            rel_pos = pos[col] - pos[row]  # [E, 2]
+            edge_attr = self.edge_encoder(rel_pos)  # [E, hidden_channels]
+        
+        # 2. Initial Projection
+        h = self.input_proj(x)
+        
+        # 3. Iterative Message Passing with Residuals
+        for i, conv in enumerate(self.convs):
+            identity = h
+            
+            # Message Passing
+            if self.use_relative_pos:
+                h = conv(h, edge_index, edge_attr=edge_attr)
+            else:
+                h = conv(h, edge_index)
+            
+            # LayerNorm (Pre-activation style)
+            if self.use_layer_norm:
+                h = self.norms[i](h)
+            
+            # Activation (GELU is smoother for stiff mechanics)
+            h = F.gelu(h)
+            
+            # Dropout
+            if self.dropout > 0:
+                h = F.dropout(h, p=self.dropout, training=self.training)
+            
+            # Residual connection
+            h = h + identity
+        
+        # 4. Final Output Projection with Residual
+        # Save pre-projection state for residual
+        h_pre = h
+        
+        # Project to output dimension
+        out = self.final_proj(h)
+        
+        # Residual connection (with projection if needed)
+        if self.res_proj is not None:
+            out = out + self.res_proj(h_pre)
+        else:
+            out = out + h_pre  # Only valid when hidden == out
+        
+        # Final LayerNorm
+        if self.use_layer_norm:
+            out = self.output_norm(out)
+        
+        return out
