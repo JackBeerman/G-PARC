@@ -1,5 +1,4 @@
 # === Model weights and large files ===
-*.pt
 *.pth
 *.ckpt
 *.h5
@@ -8,20 +7,41 @@
 *.bin
 
 # === Data files ===
-*.txt
-*.csv
+*.pt
 *.npy
 *.npz
-*.gif
 *.csv
 *.err
 *.out
-*.ipynb_checkpoints
-*.png
-*.json
+
+# === GIFs (except assets/) ===
+*.gif
+!assets/*.gif
+
+# === HuggingFace & demo cache ===
+.cache/
+**/gparc_demo/
+**/.cache/huggingface/
+
+# === Notebook outputs ===
+demo_outputs/
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
 # === Python and environment ===
 __pycache__/
 *.pyc
-.env
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
 venv/
+env/
 .env/
+.venv/
+
+# === OS files ===
+.DS_Store
+Thumbs.db
+*.png
+!assets/*.png

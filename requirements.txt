@@ -1,0 +1,27 @@
+# G-PARC: Graph Physics-Aware Recurrent Convolutions
+# ==================================================
+
+# PyTorch — install separately based on your CUDA version
+# See: https://pytorch.org/get-started/locally/
+torch>=2.0.0
+torch-geometric>=2.4.0
+torch-scatter
+torch-sparse
+
+# Scientific computing
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Data handling
+pandas>=2.0.0
+
+# Progress bars & notebook support
+tqdm>=4.65.0
+ipython>=8.0.0
+
+# Downloading model weights & data from HuggingFace
+requests>=2.28.0
