@@ -29,8 +29,8 @@ export MKL_NUM_THREADS=1
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 MODEL_PATH="/scratch/jtb3sud/shocktube_v2_training/best_model.pth"
-TEST_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/test_cases_normalized"
-OUTPUT_DIR="/scratch/jtb3sud/shocktube_v2_training/evaluation/test"
+TEST_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/train_cases_normalized"
+OUTPUT_DIR="/scratch/jtb3sud/shocktube_v2_training/evaluation/train"
 
 # Optional: explicit normalization metadata (auto-detected if omitted)
 # NORM_METADATA="/path/to/normalization_metadata.json"

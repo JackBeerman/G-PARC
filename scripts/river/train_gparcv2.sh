@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J gparc_river_v2
-#SBATCH -o gparc_river_v2.out
-#SBATCH -e gparc_river_v2.err
+#SBATCH -J gparc_river_v2_seq20
+#SBATCH -o gparc_river_v2_seq20.out
+#SBATCH -e gparc_river_v2_seq20.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
 #SBATCH -t 48:00:00
@@ -10,22 +10,16 @@
 #SBATCH --mem=120G
 
 echo "================================================================"
-echo "G-PARCv2 RIVER: GRAPH CONV + MLS + SCHEDULED SAMPLING"
+echo "G-PARCv2 RIVER: RESUMED - SEQ_LEN=20, STRIDE=5"
 echo "================================================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
 echo "Start time: $(date)"
-echo ""
-echo "Key Updates:"
-echo "  1. AdamW + Cosine Annealing (instead of ReduceLROnPlateau)"
-echo "  2. Scheduled Sampling enabled (Teacher Forcing control)"
-echo "  3. GraphConv V2 Feature Extractor"
 echo "================================================================"
 
 module purge
 module load apptainer
 
-# Optimization for Graph Operations
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
@@ -35,33 +29,33 @@ export MKL_NUM_THREADS=1
 BASE_DATA="/standard/sds_baek_energetic/HEC_RAS (River)"
 TRAIN_DIR="${BASE_DATA}/pt_train_normalized"
 VAL_DIR="${BASE_DATA}/pt_val_normalized"
-OUTPUT_DIR="/scratch/jtb3sud/river_v2_training_scheduled"
+OUTPUT_DIR="/scratch/jtb3sud/river_v2_training_scheduled/river_v2_training_seq20"
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
+
+# Resume from best seq_len=1 checkpoint
+RESUME_CKPT="/scratch/jtb3sud/river_v2_training_scheduled/best_model.pt"
 
 # ============================================================
 # TRAINING HYPERPARAMETERS
 # ============================================================
 NUM_EPOCHS=50
-SEQ_LEN=1
-STRIDE=1
-LR=1e-4                 # Kept your original River LR (Elasto uses 3e-4, change if needed)
-GRAD_CLIP_NORM=1.0      # Matches your previous River clip
+SEQ_LEN=20              # Up from 1 -> 20
+STRIDE=5                # Larger stride for diverse windows
+LR=5e-5                 # Reduced for fine-tuning
+GRAD_CLIP_NORM=1.0
 NUM_WORKERS=4
 
 # ============================================================
-# SCHEDULED SAMPLING (Teacher Forcing)
+# SCHEDULED SAMPLING
 # ============================================================
-# Options: linear, exponential, sigmoid
-# Set INITIAL=0.0 and FINAL=0.0 for pure rollout (like Elasto)
-# Set INITIAL=1.0 and FINAL=0.0 to gradually wean off supervision
 SS_SCHEDULE="linear"
 SS_INITIAL_RATIO=0.0
 SS_FINAL_RATIO=0.0
 
 # ============================================================
-# ARCHITECTURE (GraphConv V2)
+# ARCHITECTURE (must match original)
 # ============================================================
-NUM_LAYERS=2            # Standard for GraphConv V2
+NUM_LAYERS=2
 HIDDEN_CHANNELS=64
 FEATURE_OUT_CHANNELS=128
 DROPOUT=0.2
@@ -80,30 +74,22 @@ SPADE_CONCAT="--spade_concat"
 SPADE_DROPOUT=0.1
 ZERO_INIT="--zero_init"
 
-# Load Normalization Stats if they exist (optional metadata)
-NORM_STATS_FILE="${BASE_DATA}/normalization_stats.json"
-
 mkdir -p "$OUTPUT_DIR"
 
 echo ""
 echo "Configuration:"
+echo "  Resuming from: $RESUME_CKPT"
 echo "  Output: $OUTPUT_DIR"
 echo "  LR: $LR | Epochs: $NUM_EPOCHS"
 echo "  Seq Len: $SEQ_LEN | Stride: $STRIDE"
 echo "  Scheduled Sampling: $SS_SCHEDULE ($SS_INITIAL_RATIO -> $SS_FINAL_RATIO)"
-echo "  Integrator: $INTEGRATOR"
 echo "================================================================"
 
-if [ -f "$NORM_STATS_FILE" ]; then
-    cp "$NORM_STATS_FILE" "$OUTPUT_DIR/normalization_stats.json"
-    echo "✓ Copied normalization stats to output directory"
-fi
-
-# NOTE: Ensure the python script name matches your file (e.g. train_river_v2.py)
 apptainer run --nv "$CONTAINER" train_gparcv2.py \
     --train_dir "$TRAIN_DIR" \
     --val_dir "$VAL_DIR" \
     --output_dir "$OUTPUT_DIR" \
+    --resume "$RESUME_CKPT" \
     --epochs "$NUM_EPOCHS" \
     --seq_len "$SEQ_LEN" \
     --stride "$STRIDE" \

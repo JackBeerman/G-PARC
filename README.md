@@ -43,11 +43,11 @@ Shock tube simulation results demonstrating the model's stability and accuracy u
 
 ![Shock Tube](./assets/shocktube_total.gif)
 
-### 3D Cylinder Wake 💨
+### Elastoplastic Impact Dynamics 🔩
 
-Visualization of 3D vortex shedding in the wake of a cylinder, capturing complex turbulent flow structures.
+Side-by-side comparison of ground truth and model predictions on the PLAID elastoplastic benchmark, showing mesh deformation under high-velocity impact.
 
-![3D Cylinder Wake](./assets/cylinder.gif)
+![Elastoplastic Deformation](./assets/elasto_deformed.gif)
 
 ## Getting Started
 
@@ -71,6 +71,16 @@ jupyter notebook plaid_elastoplastic_demo.ipynb
 ```
 
 No manual data setup required — all artifacts are fetched and cached on first run.
+
+## Datasets
+
+This work uses the following publicly available datasets:
+
+**Elastoplastic Impact Dynamics** — 2D ElastoPlastoDynamics from the PLAID benchmark suite. High-velocity impact simulations on steel plates with nonlinear elastoplastic constitutive laws, solved with OpenRadioss on unstructured meshes.
+> Casenave, F., Roynard, X., Staber, B., Piat, W., et al. "Physics-Learning AI Datamodel (PLAID) datasets: a collection of physics simulations for machine learning." *arXiv:2505.02974*, 2025. [[Paper]](https://arxiv.org/abs/2505.02974) [[Data (Zenodo)]](https://zenodo.org/records/15286369) [[HuggingFace]](https://huggingface.co/PLAID-datasets)
+
+**River Flood Forecasting** — White River and Iowa River flood simulation data from HydroGraphNet. 2D shallow water equation solutions on unstructured meshes with varying hydrograph boundary conditions.
+> Taghizadeh, M., Zandsalimi, Z., Nabian, M.A., Shafiee-Jood, M., & Alemazkoor, N. "Interpretable physics-informed graph neural networks for flood forecasting." *Computer-Aided Civil and Infrastructure Engineering*, 2025. [[Paper]](https://doi.org/10.1111/mice.13484)
 
 ## Architecture Overview
 
