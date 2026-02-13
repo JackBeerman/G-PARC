@@ -4,7 +4,7 @@
 #SBATCH -o eval_2hop.out
 #SBATCH -e eval_2hop.err
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu
 #SBATCH -t 00:30:00
 #SBATCH -c 8
 #SBATCH --mem=64G

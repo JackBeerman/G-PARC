@@ -25,8 +25,8 @@ CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 # PATHS
 # ============================================================
 MODEL_PATH="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/best_model.pth"
-TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/val"
-OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/eval_results"
+TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/test"
+OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/eval_results/test"
 NORM_STATS="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/normalization_stats.json"
 
 # ============================================================
