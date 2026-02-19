@@ -51,9 +51,13 @@ class MappingAndRecon(nn.Module):
         # Final convolution layer (Linear = graph equivalent of Conv2d with kernel=1)
         self.conv_out = nn.Linear(n_base_features, output_channel)
 
-    def forward(self, dynamic_feature, advec_diff, edge_index):
+    def forward(self, dynamic_feature, advec_diff, edge_index, return_features=False):
         """
         Forward pass.
+        
+        Args:
+            return_features: If True, also return pre-projection features
+                             for downstream tasks (e.g., erosion head)
         """
         # Note: add_noise logic is now handled internally by the SPADE unit
         # based on how we initialized it, but we pass edge_index for the GATs.
@@ -62,4 +66,6 @@ class MappingAndRecon(nn.Module):
         resnet_out = self.resnet(spade_out, edge_index)
         conv_out = self.conv_out(resnet_out)
         
+        if return_features:
+            return conv_out, resnet_out
         return conv_out

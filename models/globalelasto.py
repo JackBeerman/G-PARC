@@ -1,4 +1,4 @@
-# In models/elastoplastic.py
+# In models/globalelasto.py
 import torch
 import torch.nn as nn
 import sys
@@ -20,6 +20,7 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
     
     Supports scheduled sampling for robust rollout training.
     UPDATED: Supports both z-score and global_max normalization for boundary detection.
+    UPDATED: Optional erosion head for element-level erosion prediction.
     """
 
     def __init__(
@@ -36,6 +37,7 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
         clamp_max: float = 10.0,
         norm_method: str = "z_score",
         max_position: float = None,
+        erosion_head: nn.Module = None,
     ):
         super().__init__()
 
@@ -69,6 +71,12 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
             self.integrator = ImplicitEuler(max_iters=3, damping=0.9)
         else:
             raise ValueError(f"Unknown integrator type: {integrator_type}")
+
+        # Erosion head (optional)
+        self.erosion_head = erosion_head
+        if erosion_head is not None:
+            # Enable feature caching in the differentiator
+            self.derivative_solver.cache_features = True
 
     def _denormalize_positions(self, static_feats: torch.Tensor) -> torch.Tensor:
         """
@@ -149,6 +157,34 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
         F_next = self._enforce_dirichlet_bc(F_next, dynamic_state, static_feats)
         return F_next
 
+    def _predict_erosion(self, elements, prev_erosion_nodes, num_nodes):
+        """
+        Run erosion head on cached differentiator features.
+        
+        Args:
+            elements: [M, 3] element connectivity
+            prev_erosion_nodes: [N, 1] node-level erosion from previous step
+            num_nodes: number of nodes
+            
+        Returns:
+            logits: [M, 1] erosion logits
+            erosion_nodes: [N, 1] node-level erosion for next step feedback
+        """
+        from models.erosion_head import element_erosion_to_node
+        
+        cached = self.derivative_solver._cached_features  # [N, 135]
+        logits = self.erosion_head(cached, elements, prev_erosion_nodes)  # [M, 1]
+        
+        # Convert predicted erosion to node-level for next step
+        pred_eroded = (torch.sigmoid(logits.detach()) > 0.5).squeeze(-1)  # [M]
+        
+        # Erosion is irreversible: OR with previous erosion
+        new_erosion_nodes = element_erosion_to_node(pred_eroded, elements, num_nodes)
+        if prev_erosion_nodes is not None:
+            new_erosion_nodes = torch.max(new_erosion_nodes, prev_erosion_nodes)
+        
+        return logits, new_erosion_nodes
+
     # =========================================================================
     # SCHEDULED SAMPLING FORWARD PASS
     # =========================================================================
@@ -165,20 +201,41 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
                                    0.0 = always prediction (free running)
                                    
         Returns:
-            predictions: List of displacement predictions
+            If erosion_head is None:
+                predictions: List of displacement predictions
+            If erosion_head is not None:
+                (predictions, erosion_logits): Tuple of lists
         """
         predictions = []
+        erosion_logits_list = []
         F_prev = None
+        prev_erosion_nodes = None
         
         for i, data in enumerate(data_list):
             x = data.x
             edge_index = data.edge_index
+            num_nodes = x.shape[0]
             
             # Preserve mesh_id for MLS/operator caching
             if hasattr(data, "mesh_id"):
                 edge_index.mesh_id = data.mesh_id
             
             static_feats = x[:, :self.num_static_feats]
+            
+            # ================================================================
+            # INITIALIZE EROSION STATE (first step)
+            # ================================================================
+            if i == 0 and self.erosion_head is not None:
+                # Initialize from GT erosion at t=0
+                if hasattr(data, 'x_element') and data.x_element is not None:
+                    from models.erosion_head import element_erosion_to_node
+                    elements = data.elements
+                    gt_eroded = (data.x_element.flatten() < 0.5).float()
+                    prev_erosion_nodes = element_erosion_to_node(
+                        gt_eroded, elements, num_nodes
+                    )
+                else:
+                    prev_erosion_nodes = torch.zeros(num_nodes, 1, device=x.device)
             
             # ================================================================
             # SCHEDULED SAMPLING DECISION
@@ -210,10 +267,21 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
             
             predictions.append(F_next)
             F_prev = F_next
+            
+            # ================================================================
+            # EROSION PREDICTION (if enabled)
+            # ================================================================
+            if self.erosion_head is not None and hasattr(data, 'elements'):
+                logits, prev_erosion_nodes = self._predict_erosion(
+                    data.elements, prev_erosion_nodes, num_nodes
+                )
+                erosion_logits_list.append(logits)
         
+        if self.erosion_head is not None:
+            return predictions, erosion_logits_list
         return predictions
 
-        # =========================================================================
+    # =========================================================================
     # ROLLOUT HELPER — use this for inference to avoid delta vs state confusion
     # =========================================================================
     
@@ -234,9 +302,10 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
             device: Target device (defaults to model's device)
             
         Returns:
-            states: List of [N, num_dynamic_feats] numpy arrays
-                    states[0] = initial condition
-                    states[t] = cumulative displacement at timestep t
+            If erosion_head is None:
+                states: List of [N, num_dynamic_feats] numpy arrays
+            If erosion_head is not None:
+                (states, erosion_preds): Tuple — erosion_preds is list of [M] bool arrays
         """
         if device is None:
             device = next(self.parameters()).device
@@ -259,16 +328,31 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
         static = simulation[0].x[:, :sf]
         current_state = self._extract_dynamic(simulation[0].x)
         edge_index = simulation[0].edge_index
+        num_nodes = simulation[0].num_nodes
         
         # Preserve mesh_id for caching
         if hasattr(simulation[0], 'mesh_id'):
             edge_index.mesh_id = simulation[0].mesh_id
         
         states = [current_state.cpu().numpy()]
+        erosion_preds = []
+        
+        # Initialize erosion state
+        prev_erosion_nodes = None
+        elements = None
+        if self.erosion_head is not None and hasattr(simulation[0], 'elements'):
+            elements = simulation[0].elements.to(device)
+            if hasattr(simulation[0], 'x_element') and simulation[0].x_element is not None:
+                from models.erosion_head import element_erosion_to_node
+                gt_eroded = (simulation[0].x_element.flatten() < 0.5).float().to(device)
+                prev_erosion_nodes = element_erosion_to_node(
+                    gt_eroded, elements, num_nodes
+                )
+            else:
+                prev_erosion_nodes = torch.zeros(num_nodes, 1, device=device)
         
         for t in range(num_steps):
             # step() returns NEXT STATE (not delta)
-            # Euler: F_next = F_current + dt * dF/dt
             current_state = self.step(
                 static_feats=static,
                 dynamic_state=current_state,
@@ -276,5 +360,15 @@ class GPARC_ElastoPlastic_Numerical(nn.Module):
                 dt=1.0
             )
             states.append(current_state.cpu().numpy())
+            
+            # Erosion prediction
+            if self.erosion_head is not None and elements is not None:
+                logits, prev_erosion_nodes = self._predict_erosion(
+                    elements, prev_erosion_nodes, num_nodes
+                )
+                pred_eroded = (torch.sigmoid(logits) > 0.5).squeeze(-1).cpu().numpy()
+                erosion_preds.append(pred_eroded)
         
+        if self.erosion_head is not None:
+            return states, erosion_preds
         return states

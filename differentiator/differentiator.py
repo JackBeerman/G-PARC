@@ -479,6 +479,10 @@ class ElastoPlasticDifferentiator(nn.Module):
             ))
         
         self._weights_initialized = False
+        
+        # Feature cache for erosion head (populated during forward)
+        self._cached_features = None
+        self.cache_features = False  # Set True to enable caching
 
     def initialize_weights(self, sample_data):
         """Pre-compute MLS weights once before training."""
@@ -598,11 +602,26 @@ class ElastoPlasticDifferentiator(nn.Module):
             # Compute displacement derivative
             # NO BOUNDARY MASKING - let network learn full physics field
             # BC enforcement happens in the integrator
-            disp_derivative = self.list_mar[-1](
-                learned_features, 
-                torch.cat(explicit_features, 1), 
-                data.edge_index
-            )
+            explicit_cat = torch.cat(explicit_features, 1)
+            
+            if self.cache_features:
+                disp_derivative, resnet_out = self.list_mar[-1](
+                    learned_features, 
+                    explicit_cat, 
+                    data.edge_index,
+                    return_features=True
+                )
+                # Cache: rich learned features + explicit physics
+                self._cached_features = torch.cat([
+                    resnet_out,    # [N, 128] learned (post-SPADE+ResNet)
+                    explicit_cat,  # [N, 7] physics (strain + laplacian)
+                ], dim=1)
+            else:
+                disp_derivative = self.list_mar[-1](
+                    learned_features, 
+                    explicit_cat, 
+                    data.edge_index
+                )
             
             t_dot.append(disp_derivative)
         else:
@@ -613,4 +632,3 @@ class ElastoPlasticDifferentiator(nn.Module):
             ))
         
         return torch.cat(t_dot, 1)
-    

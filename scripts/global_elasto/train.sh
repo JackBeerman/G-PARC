@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J gparc_2hopcont
-#SBATCH -o gparc_2hopcont.out
-#SBATCH -e gparc_2hopcont.err
+#SBATCH -J gparc_erosion
+#SBATCH -o gparc_erosion.out
+#SBATCH -e gparc_erosion.err
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1
-#SBATCH --constraint=a100_80gb
-#SBATCH -t 24:00:00
+#SBATCH --gres=gpu
+#SBATCH -t 24:10:00
 #SBATCH -c 8
 #SBATCH --mem=80G
 
 echo "================================================================"
-echo "G-PARC v3: FRESH TRAINING WITH LAPLACIAN DAMPING FIX"
+echo "G-PARC: JOINT DISPLACEMENT + EROSION HEAD TRAINING"
 echo "================================================================"
 echo ""
-echo "Changes from previous runs:"
-echo "  1. Laplacian 2hop computation (fixes boundary artifacts)"
-echo "  2. LR=3e-4 from start (what PLAID authors used)"
-echo "  3. TF=0.0 throughout (proven best strategy)"
-echo "  4. seq_len=16 from start (no Phase 1/2 split needed)"
-echo "  5. No loss decay (wasn't helping)"
-echo "  6. 1500 epochs with cosine decay (long enough for convergence)"
+echo "Strategy:"
+echo "  - Resume displacement model from 2hop checkpoint"
+echo "  - Train erosion head from scratch on top"
+echo "  - Separate LR: displacement=3e-4, erosion=1e-3"
+echo "  - Focal loss (alpha=0.25, gamma=2) for class imbalance"
+echo "  - Autoregressive erosion feedback during rollout"
 echo "================================================================"
 
 module purge
@@ -34,30 +32,41 @@ export MKL_NUM_THREADS=1
 # ============================================================
 TRAIN_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/train"
 VAL_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/val"
-OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/2hop"
+OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/erosion"
+
+# Resume from best displacement-only model
+RESUME_FROM="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
 
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # ============================================================
 # TRAINING HYPERPARAMETERS
 # ============================================================
-NUM_EPOCHS=1500           # Long cosine schedule — model was still improving at 548
-SEQ_LEN=16               # 16-step rollout from the start (no Phase 1/2 needed)
-STRIDE=16                # Non-overlapping windows
-LR=3e-4                  # PLAID authors' LR, proven effective in Phase 2
+NUM_EPOCHS=500
+SEQ_LEN=16
+STRIDE=16
+LR=3e-4                  # Displacement model LR (same as 2hop)
+EROSION_LR=1e-3           # Erosion head LR (higher — training from scratch)
+EROSION_WEIGHT=1.0        # Focal loss weight relative to MSE
 NUM_WORKERS=4
-GRAD_CLIP_NORM=2.0       # Kept from Phase 2, handles 3e-4 LR spikes
+GRAD_CLIP_NORM=2.0
 
-# ============================================================
-# NO TEACHER FORCING — proven best strategy
-# TF=0 beat TF→0.5 by 33x (0.074 vs 2.43 RRMSE)
-# ============================================================
+# Focal loss
+FOCAL_ALPHA=0.25
+FOCAL_GAMMA=2.0
+
+# Erosion head architecture
+EROSION_HIDDEN=64
+EROSION_LAYERS=2
+EROSION_DROPOUT=0.1
+
+# No teacher forcing
 SS_SCHEDULE="linear"
 SS_INITIAL_RATIO=0.0
 SS_FINAL_RATIO=0.0
 
 # ============================================================
-# ARCHITECTURE
+# ARCHITECTURE (must match 2hop checkpoint)
 # ============================================================
 NUM_LAYERS=4
 HIDDEN_CHANNELS=128
@@ -67,9 +76,7 @@ USE_LAYER_NORM="--use_layer_norm"
 USE_RELATIVE_POS="--use_relative_pos"
 CLAMP_FLAG="--no_clamp_output"
 
-# ============================================================
-# PHYSICS
-# ============================================================
+# Physics
 NUM_STATIC_FEATS=2
 NUM_DYNAMIC_FEATS=2
 USE_VON_MISES="--use_von_mises"
@@ -80,30 +87,20 @@ SPADE_DROPOUT=0.1
 ZERO_INIT="--zero_init"
 MASK_ERODING="--mask_eroding"
 
-# NO loss decay — removed, wasn't helping
-# NO boundary_margin — replaced by neighbor-count Laplacian damping in difftest.py
-
-NORM_STATS_FILE="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/normalization_stats.json"
-
 mkdir -p "$OUTPUT_DIR"
 
 echo ""
 echo "Configuration:"
 echo "  Output: $OUTPUT_DIR"
-echo "  LR: $LR (cosine → ~0 over $NUM_EPOCHS epochs)"
-echo "  Seq length: $SEQ_LEN"
-echo "  Teacher forcing: 0.0 (pure free-running)"
-echo "  Epochs: $NUM_EPOCHS"
-echo "  Grad clip: $GRAD_CLIP_NORM"
-echo "  MLS: Laplacian damping at <5 neighbors, gradients undamped"
+echo "  Resume: $RESUME_FROM (displacement only)"
+echo "  Displacement LR: $LR"
+echo "  Erosion LR: $EROSION_LR"
+echo "  Erosion weight: $EROSION_WEIGHT"
+echo "  Focal loss: alpha=$FOCAL_ALPHA, gamma=$FOCAL_GAMMA"
+echo "  Erosion head: hidden=$EROSION_HIDDEN, layers=$EROSION_LAYERS"
 echo "================================================================"
 
-if [ -f "$NORM_STATS_FILE" ]; then
-    cp "$NORM_STATS_FILE" "$OUTPUT_DIR/normalization_stats.json"
-    echo "✓ Copied normalization stats to output directory"
-fi
-
-apptainer run --nv "$CONTAINER" 2hop.py \
+apptainer run --nv "$CONTAINER" train_erosion.py \
     --train_dir "$TRAIN_DIR" \
     --val_dir "$VAL_DIR" \
     --output_dir "$OUTPUT_DIR" \
@@ -111,11 +108,17 @@ apptainer run --nv "$CONTAINER" 2hop.py \
     --seq_len "$SEQ_LEN" \
     --stride "$STRIDE" \
     --lr "$LR" \
+    --erosion_lr "$EROSION_LR" \
+    --erosion_weight "$EROSION_WEIGHT" \
+    --erosion_hidden_dim "$EROSION_HIDDEN" \
+    --erosion_num_layers "$EROSION_LAYERS" \
+    --erosion_dropout "$EROSION_DROPOUT" \
+    --focal_alpha "$FOCAL_ALPHA" \
+    --focal_gamma "$FOCAL_GAMMA" \
     --num_static_feats "$NUM_STATIC_FEATS" \
     --num_dynamic_feats "$NUM_DYNAMIC_FEATS" \
     --integrator "euler" \
     --num_layers "$NUM_LAYERS" \
-    --resume "/scratch/jtb3sud/elasto_graphconv_V2/2hop/latest_model.pth" \
     --hidden_channels "$HIDDEN_CHANNELS" \
     --feature_out_channels "$FEATURE_OUT_CHANNELS" \
     --dropout "$DROPOUT" \
@@ -133,16 +136,17 @@ apptainer run --nv "$CONTAINER" 2hop.py \
     $CLAMP_FLAG \
     --ss_schedule "$SS_SCHEDULE" \
     --ss_initial_ratio "$SS_INITIAL_RATIO" \
-    --ss_final_ratio "$SS_FINAL_RATIO"
+    --ss_final_ratio "$SS_FINAL_RATIO" \
+    --resume "$RESUME_FROM" \
+    --resume_displacement_only
 
 EXIT_CODE=$?
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
     echo "✅ Training complete!"
-    echo "  Next: run eval with --eval_mode both"
 else
-    echo "❌ Training failed"
+    echo "❌ Training failed with exit code $EXIT_CODE"
 fi
 
 exit $EXIT_CODE
