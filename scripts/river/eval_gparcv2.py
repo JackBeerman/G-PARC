@@ -174,8 +174,307 @@ def denormalize_all(normalized, extrema):
 
 
 # ==============================================================================
-# METRICS
+# HYDROLOGY METRICS (NSE, CSI, Mass Balance, Important Mask)
 # ==============================================================================
+
+def nse(pred, obs):
+    """Nash-Sutcliffe Efficiency: 1 = perfect, <0 = worse than mean."""
+    num = np.sum((pred - obs) ** 2)
+    den = np.sum((obs - np.mean(obs)) ** 2)
+    return 1.0 - num / den if den > 0 else np.nan
+
+
+def csi(pred, obs, threshold):
+    """Critical Success Index (Threat Score) for threshold exceedance."""
+    hits = np.sum((pred > threshold) & (obs > threshold))
+    misses = np.sum((pred <= threshold) & (obs > threshold))
+    false_alarms = np.sum((pred > threshold) & (obs <= threshold))
+    denom = hits + misses + false_alarms
+    return hits / denom if denom > 0 else np.nan
+
+
+def mass_balance_error(vol_pred, vol_prev, inflow, dt):
+    """Squared mass balance error: (V_pred - V_prev - dt*inflow)²."""
+    return (vol_pred - vol_prev - dt * inflow) ** 2
+
+
+def compute_mean_domain_volume(simulations, extrema):
+    """
+    Compute mean domain volume (m³) across all simulations and timesteps.
+    Used to normalize mass balance error to a percentage.
+    """
+    if extrema is None:
+        return None
+    volumes = []
+    y_min_vol = extrema['y_min'][1].item()
+    y_max_vol = extrema['y_max'][1].item()
+    for simulation in simulations:
+        for g in simulation:
+            if hasattr(g, 'y') and g.y is not None and g.y.shape[1] > 1:
+                norm_vol = g.y[:, 1].cpu().numpy()
+                phys_vol = norm_vol * (y_max_vol - y_min_vol) + y_min_vol
+                volumes.append(phys_vol.sum())
+    return float(np.mean(volumes)) if volumes else None
+
+
+def get_important_mask(simulation, num_static_feats, pred_idx, threshold, extrema):
+    """
+    Identify nodes where the variable exceeds threshold at ANY timestep.
+
+    Args:
+        simulation: list of Data objects
+        num_static_feats: number of static features
+        pred_idx: variable index in dynamic features (0=Depth)
+        threshold: physical threshold (e.g. 0.3 m for depth)
+        extrema: denormalization dict
+
+    Returns:
+        mask: [N] boolean array — True for "important" nodes
+    """
+    n = simulation[0].x.size(0)
+    mask = np.zeros(n, dtype=bool)
+
+    y_min = extrema['y_min'][pred_idx].item() if extrema else 0.0
+    y_max = extrema['y_max'][pred_idx].item() if extrema else 1.0
+
+    for g in simulation:
+        # Check x (dynamic at this timestep)
+        norm_vals = g.x[:, num_static_feats + pred_idx].cpu().numpy()
+        phys_vals = norm_vals * (y_max - y_min) + y_min
+        mask |= (phys_vals > threshold)
+
+        # Check y (target = next state) if available
+        if hasattr(g, 'y') and g.y is not None and g.y.shape[1] > pred_idx:
+            norm_y = g.y[:, pred_idx].cpu().numpy()
+            phys_y = norm_y * (y_max - y_min) + y_min
+            mask |= (phys_y > threshold)
+
+    return mask
+
+
+def compute_segmented_metrics(
+    preds_phys, targs_phys, segments, important_mask=None,
+    depth_threshold=0.3, inflow_series=None, dt=1.0, mean_vol=None
+):
+    """
+    Compute per-segment, per-group (Important/Non-Important/All) metrics.
+
+    Args:
+        preds_phys: list of [N, D] arrays (physical units), one per timestep
+        targs_phys: list of [N, D] arrays (physical units), one per timestep
+        segments: list of (start, end) tuples for time segments
+        important_mask: [N] boolean array
+        depth_threshold: threshold for CSI computation (m)
+        inflow_series: 1D array of inflow values per timestep (optional)
+        dt: timestep for mass balance (default 1.0)
+        mean_vol: mean domain volume (m³) for mass balance percentage
+
+    Returns:
+        dict with keys 'Important', 'Non_Important', 'All_Nodes',
+        each containing per-segment metric dicts
+    """
+    T = len(preds_phys)
+    n_nodes = preds_phys[0].shape[0]
+
+    if important_mask is None:
+        important_mask = np.ones(n_nodes, dtype=bool)
+
+    groups = {
+        'Important': important_mask,
+        'Non_Important': ~important_mask,
+        'All_Nodes': np.ones(n_nodes, dtype=bool),
+    }
+
+    result = {}
+    for grp_name, grp_mask in groups.items():
+        seg_metrics = {}
+        for seg_idx, (s, e) in enumerate(segments, start=1):
+            key = f"Segment_{seg_idx}"
+            e_actual = min(e, T)
+
+            if s >= T or e_actual <= s:
+                seg_metrics[key] = 'No Data'
+                continue
+
+            # Gather depth predictions/targets for this segment + group
+            depth_pred_list = []
+            depth_targ_list = []
+            hits = misses = false_alarms = 0
+            mass_errors = []
+
+            for t in range(s, e_actual):
+                p = preds_phys[t]  # [N, D]
+                g = targs_phys[t]  # [N, D]
+
+                dp = p[grp_mask, 0]  # depth predictions
+                dg = g[grp_mask, 0]  # depth targets
+
+                depth_pred_list.append(dp)
+                depth_targ_list.append(dg)
+
+                # CSI accumulation
+                hits += np.sum((dp > depth_threshold) & (dg > depth_threshold))
+                misses += np.sum((dp <= depth_threshold) & (dg > depth_threshold))
+                false_alarms += np.sum((dp > depth_threshold) & (dg <= depth_threshold))
+
+                # Mass balance on Volume (index 1) — all nodes
+                if grp_name == 'All_Nodes' and p.shape[1] > 1:
+                    vol_pred = p[:, 1].sum()
+                    if t > s:
+                        vol_prev = preds_phys[t - 1][:, 1].sum()
+                    else:
+                        vol_prev = targs_phys[max(0, t - 1)][:, 1].sum()
+                    inflow_t = inflow_series[t] if (
+                        inflow_series is not None and t < len(inflow_series)
+                    ) else 0.0
+                    mass_errors.append(
+                        mass_balance_error(vol_pred, vol_prev, inflow_t, dt)
+                    )
+
+            dp_cat = np.concatenate(depth_pred_list)
+            dg_cat = np.concatenate(depth_targ_list)
+
+            csi_denom = hits + misses + false_alarms
+
+            # Mass balance: RMSE = sqrt(mean(squared_errors)), then % of mean volume
+            mb_rmse = float(np.sqrt(np.mean(mass_errors))) if mass_errors else np.nan
+            mb_pct = float((mb_rmse / mean_vol) * 100) if (
+                mass_errors and mean_vol is not None and mean_vol > 0
+            ) else np.nan
+
+            seg_metrics[key] = {
+                'Time_Range': (s, e_actual - 1),
+                'RMSE': float(np.sqrt(np.mean((dp_cat - dg_cat) ** 2))),
+                'NSE': float(nse(dp_cat, dg_cat)),
+                'CSI': float(hits / csi_denom) if csi_denom > 0 else np.nan,
+                'MassBalance_RMSE_m3': mb_rmse,
+                'MassBalance_pct': mb_pct,
+            }
+
+        result[grp_name] = seg_metrics
+
+    return result
+
+
+def compute_overall_hydrology_metrics(
+    preds_phys, targs_phys, depth_threshold=0.3
+):
+    """
+    Compute overall RMSE, NSE, CSI across all timesteps and nodes on depth.
+
+    Args:
+        preds_phys: list of [N, D] arrays (physical units)
+        targs_phys: list of [N, D] arrays (physical units)
+        depth_threshold: threshold for CSI
+
+    Returns:
+        dict with RMSE, NSE, CSI on depth
+    """
+    dp = np.concatenate([p[:, 0] for p in preds_phys])
+    dg = np.concatenate([t[:, 0] for t in targs_phys])
+
+    hits = np.sum((dp > depth_threshold) & (dg > depth_threshold))
+    misses = np.sum((dp <= depth_threshold) & (dg > depth_threshold))
+    fa = np.sum((dp > depth_threshold) & (dg <= depth_threshold))
+    csi_denom = hits + misses + fa
+
+    return {
+        'Depth_RMSE': float(np.sqrt(np.mean((dp - dg) ** 2))),
+        'Depth_NSE': float(nse(dp, dg)),
+        'Depth_CSI': float(hits / csi_denom) if csi_denom > 0 else np.nan,
+    }
+
+
+def compute_per_timestep_metrics(
+    preds_phys, targs_phys, important_mask=None,
+    depth_threshold=0.3, inflow_series=None, dt=1.0, mean_vol=None
+):
+    """
+    Compute metrics at EACH timestep for a single simulation.
+    This handles varying-length simulations properly — each sim contributes
+    metrics only for the timesteps it has, and aggregation across sims
+    can average over whichever sims are active at each t.
+
+    Args:
+        preds_phys: list of [N, D] arrays (physical units), length T
+        targs_phys: list of [N, D] arrays (physical units), length T
+        important_mask: [N] boolean array (nodes with depth > 0)
+        depth_threshold: threshold for CSI computation (m)
+        inflow_series: 1D array of inflow values (optional)
+        dt: timestep for mass balance
+        mean_vol: mean domain volume (m³) for mass balance percentage
+
+    Returns:
+        list of T dicts, each with keys:
+            'timestep', 'depth_rmse', 'depth_nse', 'depth_csi',
+            'depth_rmse_important', 'depth_rmse_non_important',
+            'mass_balance_rmse_m3', 'mass_balance_pct'
+    """
+    T = len(preds_phys)
+    n_nodes = preds_phys[0].shape[0]
+
+    if important_mask is None:
+        important_mask = np.ones(n_nodes, dtype=bool)
+    imp = important_mask
+    non_imp = ~important_mask
+
+    per_t = []
+    for t in range(T):
+        p = preds_phys[t]  # [N, D]
+        g = targs_phys[t]
+
+        dp_all = p[:, 0]
+        dg_all = g[:, 0]
+
+        # Depth RMSE — all nodes
+        depth_rmse = float(np.sqrt(np.mean((dp_all - dg_all) ** 2)))
+
+        # Depth NSE — all nodes
+        denom_nse = np.sum((dg_all - np.mean(dg_all)) ** 2)
+        depth_nse = float(
+            1.0 - np.sum((dp_all - dg_all) ** 2) / denom_nse
+        ) if denom_nse > 0 else np.nan
+
+        # CSI
+        hits = np.sum((dp_all > depth_threshold) & (dg_all > depth_threshold))
+        misses = np.sum((dp_all <= depth_threshold) & (dg_all > depth_threshold))
+        fa = np.sum((dp_all > depth_threshold) & (dg_all <= depth_threshold))
+        csi_denom = hits + misses + fa
+        depth_csi = float(hits / csi_denom) if csi_denom > 0 else np.nan
+
+        # Important / non-important RMSE
+        rmse_imp = float(np.sqrt(np.mean((p[imp, 0] - g[imp, 0]) ** 2))) if imp.sum() > 0 else np.nan
+        rmse_non = float(np.sqrt(np.mean((p[non_imp, 0] - g[non_imp, 0]) ** 2))) if non_imp.sum() > 0 else np.nan
+
+        # Mass balance (volume = index 1)
+        mb_rmse_m3 = np.nan
+        mb_pct = np.nan
+        if p.shape[1] > 1:
+            vol_pred = p[:, 1].sum()
+            if t > 0:
+                vol_prev = preds_phys[t - 1][:, 1].sum()
+            else:
+                vol_prev = targs_phys[0][:, 1].sum()
+            inflow_t = inflow_series[t] if (
+                inflow_series is not None and t < len(inflow_series)
+            ) else 0.0
+            mb_sq = mass_balance_error(vol_pred, vol_prev, inflow_t, dt)
+            mb_rmse_m3 = float(np.sqrt(mb_sq))
+            if mean_vol is not None and mean_vol > 0:
+                mb_pct = float((mb_rmse_m3 / mean_vol) * 100)
+
+        per_t.append({
+            'timestep': t,
+            'depth_rmse': depth_rmse,
+            'depth_nse': depth_nse,
+            'depth_csi': depth_csi,
+            'depth_rmse_important': rmse_imp,
+            'depth_rmse_non_important': rmse_non,
+            'mass_balance_rmse_m3': mb_rmse_m3,
+            'mass_balance_pct': mb_pct,
+        })
+
+    return per_t
 
 def compute_rrmse(predictions, references, valid_masks=None):
     """
@@ -535,13 +834,43 @@ class RiverEvaluator:
         
         return predictions
     
-    def evaluate_rollout(self, simulations, rollout_steps=50):
-        """Evaluate in rollout mode."""
+    def evaluate_rollout(self, simulations, rollout_steps=50,
+                         segments=None, depth_threshold=0.3,
+                         inflow_dir=None, dt=1.0):
+        """Evaluate in rollout mode with hydrology metrics."""
         results = {
             'predictions': [], 'targets': [],
             'metadata': [], 'simulation_metrics': [],
         }
         self.simulation_metrics = []
+        
+        # Compute mean domain volume for mass balance percentage
+        mean_vol = compute_mean_domain_volume(simulations, self.extrema)
+        if mean_vol is not None:
+            print(f"  Mean domain volume: {mean_vol:.2f} m³")
+        
+        # Load inflow series if available
+        inflow_data = {}
+        if inflow_dir is not None:
+            inflow_path = Path(inflow_dir)
+            for fname in inflow_path.glob("all_inflows_*.txt"):
+                which = "iowa" if "iowa" in fname.name else "white"
+                with open(fname, "r") as f:
+                    next(f)  # skip header
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 3:
+                            hid, _, val_str = parts[:3]
+                            key = hid + "iw" if (
+                                which == "iowa" and not hid.endswith("iw")
+                            ) else hid
+                            inflow_data.setdefault(key, []).append(
+                                float(val_str)
+                            )
+                for key in inflow_data:
+                    inflow_data[key] = np.array(inflow_data[key])
+            if inflow_data:
+                print(f"  Loaded inflow series for {len(inflow_data)} sims")
         
         with torch.no_grad():
             for sim_idx, simulation in enumerate(tqdm(simulations, desc="Rollout")):
@@ -567,14 +896,14 @@ class RiverEvaluator:
                     df = self.model.num_dynamic_feats
                     targs = [simulation[t].y[:, :df].cpu().numpy() for t in range(len(preds))]
                     
-                    # Denormalize to physical units if extrema available
+                    # Denormalize to physical units
                     preds_phys = [denormalize_all(p, self.extrema) for p in preds]
                     targs_phys = [denormalize_all(t, self.extrema) for t in targs]
                     
                     results['predictions'].append(preds_phys)
                     results['targets'].append(targs_phys)
                     
-                    # Per-simulation metrics (in physical units)
+                    # Per-simulation overall metrics
                     all_p = np.concatenate(preds_phys, axis=0)
                     all_t = np.concatenate(targs_phys, axis=0)
                     rmse = float(np.sqrt(mean_squared_error(all_t, all_p)))
@@ -593,9 +922,46 @@ class RiverEvaluator:
                     }
                     results['metadata'].append(meta)
                     
+                    # Hydrology metrics (on depth, physical units)
+                    hydro_overall = compute_overall_hydrology_metrics(
+                        preds_phys, targs_phys, depth_threshold
+                    )
+                    
+                    # Important mask
+                    sf = self.model.num_static_feats
+                    imp_mask = get_important_mask(
+                        simulation, sf, pred_idx=0,
+                        threshold=0.0, extrema=self.extrema,
+                    )
+                    
+                    # Segmented metrics
+                    seg_metrics = None
+                    if segments is not None and self.extrema is not None:
+                        inflow_ts = inflow_data.get(sim_name, None)
+                        seg_metrics = compute_segmented_metrics(
+                            preds_phys, targs_phys, segments,
+                            important_mask=imp_mask,
+                            depth_threshold=depth_threshold,
+                            inflow_series=inflow_ts,
+                            dt=dt,
+                            mean_vol=mean_vol,
+                        )
+                    
                     sim_metrics = {
                         'metadata': meta,
                         'overall': {'rmse': rmse, 'r2': r2},
+                        'hydrology': hydro_overall,
+                        'segments': seg_metrics,
+                        'per_timestep': compute_per_timestep_metrics(
+                            preds_phys, targs_phys,
+                            important_mask=imp_mask,
+                            depth_threshold=depth_threshold,
+                            inflow_series=inflow_data.get(sim_name, None),
+                            dt=dt,
+                            mean_vol=mean_vol,
+                        ),
+                        'n_important_nodes': int(imp_mask.sum()),
+                        'n_total_nodes': int(len(imp_mask)),
                     }
                     self.simulation_metrics.append(sim_metrics)
                     results['simulation_metrics'].append(sim_metrics)
@@ -670,7 +1036,7 @@ class RiverEvaluator:
         return results
     
     def compute_aggregate_metrics(self, results):
-        """Compute aggregate RRMSE metrics."""
+        """Compute aggregate RRMSE + hydrology metrics."""
         all_pred, all_targ = [], []
         for seq_p, seq_t in zip(results['predictions'], results['targets']):
             for p, t in zip(seq_p, seq_t):
@@ -680,12 +1046,26 @@ class RiverEvaluator:
         rrmse_total = compute_rrmse(all_pred, all_targ)
         rrmse_per_var = compute_rrmse_per_variable(all_pred, all_targ, VAR_NAMES[:all_pred[0].shape[1]])
         
-        return {
+        agg = {
             'RRMSE_total': float(rrmse_total),
             **{f'RRMSE_{k}': float(v) for k, v in rrmse_per_var.items()},
             'n_simulations': len(results['predictions']),
             'n_total_samples': len(all_pred),
         }
+        
+        # Aggregate hydrology metrics across sims
+        hydro_keys = ['Depth_RMSE', 'Depth_NSE', 'Depth_CSI']
+        for hk in hydro_keys:
+            vals = [
+                m.get('hydrology', {}).get(hk, np.nan)
+                for m in results.get('simulation_metrics', [])
+                if m.get('hydrology')
+            ]
+            valid = [v for v in vals if not np.isnan(v)]
+            if valid:
+                agg[f'Avg_{hk}'] = float(np.mean(valid))
+        
+        return agg
     
     def create_visualizations(self, simulations, results, sim_idx, output_dir,
                                fps=5, frame_skip=1, eval_mode='rollout',
@@ -922,6 +1302,17 @@ def main():
     parser.add_argument("--extrema_path", type=str, default=None,
                         help="Path to global_y_extrema.pth for denormalization to physical units")
     
+    # Hydrology metrics
+    parser.add_argument("--depth_threshold", type=float, default=0.3,
+                        help="Depth threshold (m) for CSI computation")
+    parser.add_argument("--segments", type=str, default=None,
+                        help="Time segments as comma-separated start:end pairs, "
+                             "e.g. '0:22,22:64,64:79,79:97,97:111'")
+    parser.add_argument("--inflow_dir", type=str, default=None,
+                        help="Directory containing all_inflows_*.txt files for mass balance")
+    parser.add_argument("--hydro_dt", type=float, default=1.0,
+                        help="Timestep for mass balance computation")
+    
     args = parser.parse_args()
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -1000,13 +1391,26 @@ def main():
     evaluator = RiverEvaluator(model, device, extrema=extrema)
     eval_mode = args.eval_mode.lower()
     
+    # Parse segments
+    segments = None
+    if args.segments:
+        segments = []
+        for pair in args.segments.split(','):
+            s, e = pair.strip().split(':')
+            segments.append((int(s), int(e)))
+        print(f"  Time segments: {segments}")
+    
     # ---------- ROLLOUT ----------
     if eval_mode in ['rollout', 'both']:
         print(f"\n{'='*60}")
         print(f"ROLLOUT EVALUATION (steps={args.rollout_steps})")
         print(f"{'='*60}")
         
-        rollout_results = evaluator.evaluate_rollout(simulations, rollout_steps=args.rollout_steps)
+        rollout_results = evaluator.evaluate_rollout(
+            simulations, rollout_steps=args.rollout_steps,
+            segments=segments, depth_threshold=args.depth_threshold,
+            inflow_dir=args.inflow_dir, dt=args.hydro_dt,
+        )
         rollout_metrics = evaluator.compute_aggregate_metrics(rollout_results)
         
         print(f"\n{'─'*40}")
@@ -1015,10 +1419,117 @@ def main():
         for k, v in rollout_metrics.items():
             print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
         
+        # Print segmented metrics summary
+        if segments is not None:
+            print(f"\n{'─'*60}")
+            print("SEGMENTED METRICS (averaged across simulations)")
+            print(f"{'─'*60}")
+            
+            for grp_label in ['Important', 'Non_Important', 'All_Nodes']:
+                print(f"\n  === {grp_label.replace('_', ' ')} ===")
+                
+                for seg_idx in range(1, len(segments) + 1):
+                    seg_key = f"Segment_{seg_idx}"
+                    
+                    # Collect this segment's metrics across sims
+                    seg_rmses, seg_nses, seg_csis = [], [], []
+                    seg_mb_rmses, seg_mb_pcts = [], []
+                    seg_range = None
+                    
+                    for sm in evaluator.simulation_metrics:
+                        seg_data = (sm.get('segments') or {}).get(grp_label, {}).get(seg_key)
+                        if isinstance(seg_data, dict):
+                            seg_range = seg_data['Time_Range']
+                            seg_rmses.append(seg_data['RMSE'])
+                            seg_nses.append(seg_data['NSE'])
+                            if not np.isnan(seg_data['CSI']):
+                                seg_csis.append(seg_data['CSI'])
+                            mb_rmse = seg_data.get('MassBalance_RMSE_m3')
+                            mb_pct = seg_data.get('MassBalance_pct')
+                            if mb_rmse is not None and not np.isnan(mb_rmse):
+                                seg_mb_rmses.append(mb_rmse)
+                            if mb_pct is not None and not np.isnan(mb_pct):
+                                seg_mb_pcts.append(mb_pct)
+                    
+                    if seg_rmses:
+                        r = f"t={seg_range[0]}–{seg_range[1]}" if seg_range else ""
+                        csi_str = f"{np.mean(seg_csis):.4f}" if seg_csis else "N/A"
+                        mb_str = (
+                            f"MassBal={np.mean(seg_mb_rmses):.2e} m³ ({np.mean(seg_mb_pcts):.1f}%)"
+                            if seg_mb_rmses else "MassBal=N/A"
+                        )
+                        print(
+                            f"    {seg_key} ({r}): "
+                            f"RMSE={np.mean(seg_rmses):.4f} m, "
+                            f"NSE={np.mean(seg_nses):.4f}, "
+                            f"{mb_str}, "
+                            f"CSI={csi_str}"
+                        )
+                    else:
+                        print(f"    {seg_key}: No Data")
+        
         rollout_metrics['eval_mode'] = 'rollout'
         rollout_metrics['physical_units'] = args.extrema_path is not None
         with open(output_path / 'rollout_metrics.json', 'w') as f:
-            json.dump(rollout_metrics, f, indent=2)
+            # Include per-sim hydrology + segment + per-timestep details
+            save_data = {
+                'aggregate': rollout_metrics,
+                'per_simulation': [],
+            }
+            for sm in evaluator.simulation_metrics:
+                # Make segments JSON-serializable
+                sim_entry = {
+                    'case_name': sm['metadata']['case_name'],
+                    'mesh_id': sm['metadata']['mesh_id'],
+                    'rollout_length': sm['metadata']['rollout_length'],
+                    'overall': sm['overall'],
+                    'hydrology': sm.get('hydrology', {}),
+                    'n_important_nodes': sm.get('n_important_nodes', 0),
+                    'n_total_nodes': sm.get('n_total_nodes', 0),
+                }
+                if sm.get('segments'):
+                    sim_entry['segments'] = sm['segments']
+                if sm.get('per_timestep'):
+                    sim_entry['per_timestep'] = sm['per_timestep']
+                save_data['per_simulation'].append(sim_entry)
+            
+            # Aggregate per-timestep: mean ± std across sims at each t
+            # (handles varying lengths — only average over sims active at t)
+            max_T = max(
+                (len(sm.get('per_timestep', [])) for sm in evaluator.simulation_metrics),
+                default=0
+            )
+            if max_T > 0:
+                agg_per_t = []
+                metric_keys = [
+                    'depth_rmse', 'depth_nse', 'depth_csi',
+                    'depth_rmse_important', 'depth_rmse_non_important',
+                    'mass_balance_rmse_m3', 'mass_balance_pct',
+                ]
+                for t in range(max_T):
+                    t_entry = {'timestep': t, 'n_sims_active': 0}
+                    vals = {k: [] for k in metric_keys}
+                    for sm in evaluator.simulation_metrics:
+                        pt = sm.get('per_timestep', [])
+                        if t < len(pt):
+                            t_entry['n_sims_active'] += 1
+                            for k in metric_keys:
+                                v = pt[t].get(k)
+                                if v is not None and not np.isnan(v):
+                                    vals[k].append(v)
+                    for k in metric_keys:
+                        if vals[k]:
+                            t_entry[f'{k}_mean'] = float(np.mean(vals[k]))
+                            t_entry[f'{k}_std'] = float(np.std(vals[k]))
+                        else:
+                            t_entry[f'{k}_mean'] = None
+                            t_entry[f'{k}_std'] = None
+                    agg_per_t.append(t_entry)
+                save_data['aggregate_per_timestep'] = agg_per_t
+            
+            json.dump(save_data, f, indent=2, default=lambda x: 
+                      float(x) if isinstance(x, (np.floating, np.integer)) else
+                      None if (isinstance(x, float) and np.isnan(x)) else str(x))
         
         fig = evaluator.plot_dashboard(rollout_results, eval_mode='rollout')
         if fig:

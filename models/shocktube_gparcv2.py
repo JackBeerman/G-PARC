@@ -7,13 +7,18 @@ Key differences from River/Elastoplastic:
   - Global parameter conditioning (pressure, density, delta_t) via FiLM
   - skip_dynamic_indices: raw dynamic has 4 features, we skip y_momentum → use 3
   - GlobalParameterProcessor embeds [pressure, density, dt] → [64]
-  - Global embed is threaded into the differentiator via static_feats augmentation
+  - Both global_embed AND raw global_attrs are threaded to the differentiator
 
 Architecture:
   GlobalParameterProcessor(pressure, density, dt) → global_embed [64]
-  static_augmented = cat(static[2], global_embed[64]) → [66]
+  static_augmented = cat(static[2], global_embed[64], raw_global[3]) → [69]
   ShockTubeDifferentiator(static_aug + dynamic) → dφ/dt [3]
   Euler: φ_{t+1} = φ_t + dt × dφ/dt
+
+FiLM coverage (inside differentiator):
+  1. SimulationConditionedLayerNorm on learned features  [raw 3-vector]
+  2. SimulationConditionedLayerNorm on dynamic state     [raw 3-vector]
+  3. Global embed available for future SPADE extensions
 """
 
 import torch
@@ -34,8 +39,8 @@ class GPARC_ShockTube_V2(nn.Module):
     MLS (advection + diffusion) + Euler numerical integration
     + FiLM from global simulation parameters (pressure, density, delta_t).
     
-    The derivative solver expects state = [static(2) | global(64) | dynamic(3)]
-    The model's step() builds [static + global] as augmented static, then
+    The derivative solver expects state = [static(2) | global_embed(64) | raw_global(3) | dynamic(3)]
+    The model's step() builds [static + global_embed + raw_global] as augmented static, then
     the numerical integrator concatenates [augmented_static | dynamic] → derivative_fn.
     """
 
@@ -57,6 +62,7 @@ class GPARC_ShockTube_V2(nn.Module):
         self.num_static_feats = num_static_feats
         self.num_dynamic_feats = num_dynamic_feats
         self.skip_dynamic_indices = skip_dynamic_indices or []
+        self.global_param_dim = global_param_dim
         self.global_embed_dim = global_embed_dim
         self.clamp_output = clamp_output
         self.clamp_max = clamp_max
@@ -116,19 +122,27 @@ class GPARC_ShockTube_V2(nn.Module):
         dynamic_state: torch.Tensor,     # [N, 3]
         edge_index,
         global_embed: torch.Tensor,      # [global_embed_dim]
+        global_attrs: torch.Tensor,      # [global_param_dim] raw params
         dt: float = 1.0,
     ) -> torch.Tensor:
         """
         Single integration step with global conditioning.
         
-        We augment static_feats with the global embedding so the integrator
-        passes it through to the derivative solver:
-          augmented_static = [static(2) | global(64)]  → [N, 66]
+        We augment static_feats with both global_embed AND raw_global_attrs
+        so the integrator passes them through to the derivative solver:
+          augmented_static = [static(2) | global_embed(64) | raw_global(3)]  → [N, 69]
           integrator calls: derivative_fn([augmented_static | dynamic], edge_index)
+          derivative_fn receives: [N, 72] and parses internally
         """
         N = static_feats.shape[0]
-        global_expanded = global_embed.unsqueeze(0).expand(N, -1)  # [N, 64]
-        static_augmented = torch.cat([static_feats, global_expanded], dim=1)  # [N, 66]
+        global_embed_expanded = global_embed.unsqueeze(0).expand(N, -1)   # [N, 64]
+        raw_global_expanded = global_attrs.unsqueeze(0).expand(N, -1)     # [N, 3]
+        
+        static_augmented = torch.cat([
+            static_feats,           # [N, 2]
+            global_embed_expanded,  # [N, 64]
+            raw_global_expanded,    # [N, 3]
+        ], dim=1)                   # [N, 69]
         
         F_next = self.integrator(
             derivative_fn=self.derivative_solver,
@@ -165,12 +179,15 @@ class GPARC_ShockTube_V2(nn.Module):
         
         # Global params from first timestep (constant across sequence)
         first_data = data_list[0]
-        global_attrs = self._extract_global_attrs(first_data)
-        global_embed = self.global_processor(global_attrs)  # [64]
+        global_attrs = self._extract_global_attrs(first_data)  # [3] raw
+        global_embed = self.global_processor(global_attrs)      # [64] processed
         
-        # Use explicit delta_t from global params for numerical integration
+        # dt=1.0: The network learns the full per-step update via FiLM
+        # conditioning on normalized delta_t. No explicit dt multiplication
+        # needed — this matches v1's approach where the learned integrator
+        # absorbed dt implicitly, which gave best performance.
         if dt is None:
-            dt = first_data.global_delta_t.flatten()[0].item()
+            dt = 1.0
         
         for i, data in enumerate(data_list):
             x = data.x
@@ -195,6 +212,7 @@ class GPARC_ShockTube_V2(nn.Module):
                 dynamic_state=current_dynamic,
                 edge_index=edge_index,
                 global_embed=global_embed,
+                global_attrs=global_attrs,
                 dt=dt,
             )
             
@@ -231,9 +249,9 @@ class GPARC_ShockTube_V2(nn.Module):
         global_attrs = self._extract_global_attrs(simulation[0]).to(device)
         global_embed = self.global_processor(global_attrs)
         
-        # Use explicit delta_t from global params
+        # dt=1.0: FiLM conditioning handles timestep variation
         if dt is None:
-            dt = simulation[0].global_delta_t.flatten()[0].item()
+            dt = 1.0
         
         static = simulation[0].x[:, :self.num_static_feats]
         current_state = self._extract_dynamic(simulation[0].x)
@@ -247,6 +265,7 @@ class GPARC_ShockTube_V2(nn.Module):
                 dynamic_state=current_state,
                 edge_index=edge_index,
                 global_embed=global_embed,
+                global_attrs=global_attrs,
                 dt=dt,
             )
             states.append(current_state.cpu().numpy())

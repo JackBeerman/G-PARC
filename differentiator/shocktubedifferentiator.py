@@ -1,27 +1,25 @@
 """
-ShockTubeDifferentiator
-=======================
+ShockTubeDifferentiator (v2 — FiLM on learned features only)
+=============================================================
 G-PARCv2 differentiator for compressible Euler equations (shock tube).
 
 Physics:
   - Advection: v·∇φ for conserved quantities transported by flow
   - Diffusion: ∇²φ for numerical viscosity / shock stabilization
-  - Global FiLM conditioning from (pressure, density, delta_t)
+  - FiLM conditioning on LEARNED FEATURES from global params
 
-The shock tube is physically 1D but set in a 2D domain with (x, y) positions,
-so standard 2D MLS operators apply.
+CRITICAL DESIGN CHOICE: Physics operators (advection, diffusion) use RAW
+dynamic features, NOT FiLM-conditioned features. Computing velocity as
+FiLM'd_momentum / FiLM'd_density produces physically meaningless values
+because the affine transform destroys the density/momentum relationship.
+This matches the river differentiator and v1's approach where FiLM
+conditioned the learned representation, not the physics.
 
 Dynamic features (after skipping y_momentum at raw index 2):
   [0] density, [1] x_momentum, [2] total_energy
 
 Call signature: (state, edge_index) → dφ/dt
-  where state = [static_feats | dynamic_feats | global_context]
-
-IMPORTANT: The numerical integrator sees:
-  static_feats = original_static (2) + global_context (64) = 66
-  dynamic_state = 3 (after skip)
-  It concatenates them as state = [66 + 3] = [69] and calls derivative_fn(state, edge_index)
-  So this differentiator splits: static[:2], dynamic[66:69], global[2:66]
+  where state = [static_feats | global_context | dynamic_feats]
 """
 
 import torch
@@ -33,19 +31,34 @@ from .hop import (
     SolveWeightLST2d,
     AdvectionMLS,
     DiffusionMLS,
+    DiffusionFD,
 )
 from .mappingandrecon import MappingAndRecon
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from utilities.embed import SimulationConditionedLayerNorm
 
 
 class ShockTubeDifferentiator(nn.Module):
     """
-    Shock Tube Differentiator with MLS physics + Global FiLM.
+    Shock Tube Differentiator with MLS physics + FiLM.
     
-    Architecture (per-variable MARs, matching ElastoPlastic pattern):
+    FiLM conditioning (on learned features only):
+      1. SimulationConditionedLayerNorm on learned features  [raw 3-vector]
+      2. Global embed (64-dim) concatenated into augmented static for context
+    
+    IMPORTANT: Physics operators (advection, diffusion) use RAW dynamic
+    features to preserve physical meaning. FiLM does NOT touch dynamic
+    state — this matches the river differentiator and v1's pattern where
+    FiLM conditioned the representation, not the physics.
+    
+    Architecture (per-variable MARs):
       1. Feature extraction on static geometry → learned features [n_fe_features]
-      2. FiLM modulation with global embedding
-      3. AdvectionMLS + DiffusionMLS on each dynamic variable → physics features
-      4. MappingAndRecon (SPADE) fuses learned + physics → dφ/dt per variable
+      2. FiLM: condition learned features on [pressure, density, dt]
+      3. AdvectionMLS + DiffusionFD on RAW dynamic variables → physics features
+      4. MappingAndRecon (SPADE) fuses FiLM'd learned + raw physics → dφ/dt
     """
     
     def __init__(
@@ -54,12 +67,14 @@ class ShockTubeDifferentiator(nn.Module):
         num_dynamic_feats: int,
         feature_extractor: nn.Module,
         gradient_solver: SolveGradientsLST,
-        laplacian_solver: SolveWeightLST2d,
+        laplacian_solver: SolveWeightLST2d = None,
         n_fe_features: int = 128,
         global_embed_dim: int = 64,
+        global_param_dim: int = 3,
         list_adv_idx: list = None,
         list_dif_idx: list = None,
         velocity_indices: list = None,
+        diffusion_type: str = 'mls',
         spade_random_noise: bool = False,
         heads: int = 4,
         concat: bool = True,
@@ -72,11 +87,10 @@ class ShockTubeDifferentiator(nn.Module):
         self.num_dynamic_feats = num_dynamic_feats     # 3 (after skip)
         self.n_fe_features = n_fe_features
         self.global_embed_dim = global_embed_dim
+        self.global_param_dim = global_param_dim
+        self.diffusion_type = diffusion_type.lower()
         
         # Velocity indices within the USED dynamic features
-        # After skipping y_momentum, dynamic = [density, x_momentum, total_energy]
-        # x_momentum is at index 1 → velocity_indices = [1] for 1D advection in x
-        # We pad with zero for y-component in the forward pass
         self.velocity_indices = velocity_indices if velocity_indices is not None else [1]
         
         # Feature extractor
@@ -89,7 +103,9 @@ class ShockTubeDifferentiator(nn.Module):
         # Default: physics on all dynamic features
         if list_adv_idx is None:
             list_adv_idx = list(range(num_dynamic_feats))
-        if list_dif_idx is None:
+        if self.diffusion_type == 'none':
+            list_dif_idx = []
+        elif list_dif_idx is None:
             list_dif_idx = list(range(num_dynamic_feats))
             
         self.list_adv_idx = list_adv_idx
@@ -106,12 +122,17 @@ class ShockTubeDifferentiator(nn.Module):
                 self.list_adv.append(None)
                 
             if i in list_dif_idx:
-                self.list_dif.append(DiffusionMLS(laplacian_solver))
+                if self.diffusion_type == 'fd':
+                    self.list_dif.append(DiffusionFD())
+                elif self.diffusion_type == 'mls':
+                    assert laplacian_solver is not None, "laplacian_solver required for diffusion_type='mls'"
+                    self.list_dif.append(DiffusionMLS(laplacian_solver))
+                else:
+                    self.list_dif.append(None)
             else:
                 self.list_dif.append(None)
 
         # --- MappingAndRecon (SPADE) per variable ---
-        # Each dynamic variable gets its own MAR block
         self.list_mar = nn.ModuleList()
         for i in range(num_dynamic_feats):
             n_explicit = 0
@@ -132,12 +153,15 @@ class ShockTubeDifferentiator(nn.Module):
             else:
                 self.list_mar.append(None)
         
-        # --- Global FiLM ---
-        self.global_film_scale = nn.Sequential(
-            nn.Linear(global_embed_dim, n_fe_features),
-            nn.Tanh()
+        # --- FiLM: Condition learned features on raw global params ---
+        # SimulationConditionedLayerNorm: LayerNorm + gamma/beta from [pressure, density, dt]
+        # NOTE: Only learned features are FiLM'd, NOT the dynamic state.
+        # Physics operators (advection, diffusion) need raw dynamic features
+        # to preserve physical meaning (e.g., velocity = momentum/density).
+        self.feature_norm = SimulationConditionedLayerNorm(
+            normalized_shape=n_fe_features,
+            global_dim=global_param_dim,
         )
-        self.global_film_bias = nn.Linear(global_embed_dim, n_fe_features)
         
         self._weights_initialized = False
     
@@ -162,47 +186,55 @@ class ShockTubeDifferentiator(nn.Module):
         
         The numerical integrator calls this as derivative_fn(state, edge_index) where:
           state = [static_feats_augmented | dynamic_state]
-          static_feats_augmented = [original_static (2) | global_context (64)]
+          static_feats_augmented = [pos (2) | global_embed (64) | raw_global (3)]
           dynamic_state = [density, x_momentum, total_energy] (3)
         
-        So state is [N, 2 + 64 + 3] = [N, 69]
+        So state is [N, 2 + 64 + 3 + 3] = [N, 72]
+        
+        IMPORTANT: Physics operators (advection, diffusion) use RAW dynamic
+        features to preserve physical meaning. FiLM only conditions the learned
+        feature representation, matching the river differentiator pattern and
+        v1's approach where FiLM affected the representation, not the physics.
         """
         if not self._weights_initialized:
             raise RuntimeError("initialize_weights() must be called before forward()")
         
         sf = self.num_static_feats        # 2
         ge = self.global_embed_dim         # 64
-        df = self.num_dynamic_feats        # 3
+        gp = self.global_param_dim         # 3
         
-        # The integrator concatenated [static_augmented | dynamic]:
-        #   static_augmented = state[:, :sf+ge]  (positions + global)
-        #   dynamic          = state[:, sf+ge:]
-        static_feats   = state[:, :sf]                # [N, 2]  x, y positions
-        global_context = state[:, sf:sf + ge]         # [N, 64] global embed (repeated)
-        dynamic_feats  = state[:, sf + ge:sf + ge + df]  # [N, 3]  density, x_mom, energy
+        # Parse the concatenated state tensor:
+        #   [0:2]     = positions
+        #   [2:66]    = global_embed (64)
+        #   [66:69]   = raw_global_attrs (3) [pressure, density, dt]
+        #   [69:72]   = dynamic_feats (3)
+        static_feats   = state[:, :sf]                          # [N, 2]
+        global_embed   = state[:, sf:sf + ge]                   # [N, 64]
+        raw_global     = state[:, sf + ge:sf + ge + gp]         # [N, 3]
+        dynamic_feats  = state[:, sf + ge + gp:]                # [N, 3]
         
-        # --- 1. Learned Features + Global FiLM ---
+        # Raw global attrs for SimulationConditionedLayerNorm (single vector)
+        global_attrs = raw_global[0]  # [3] — same for all nodes
+        
+        # --- 1. Learned Features + FiLM ---
+        # FiLM conditions the learned representation, NOT the physics
         learned_features = self.feature_extractor(
             static_feats, edge_index, pos=static_feats
         )
-        
-        # FiLM modulation (all nodes share same global params, use first row)
-        g = global_context[0:1]  # [1, 64]
-        scale = self.global_film_scale(g)  # [1, n_fe_features]
-        bias = self.global_film_bias(g)    # [1, n_fe_features]
-        learned_features = learned_features * (1.0 + scale) + bias
+        learned_features = self.feature_norm(learned_features, global_attrs)
         
         # --- 2. Build mesh_data for MLS ---
         mesh_data = Data(pos=static_feats, edge_index=edge_index)
         mesh_data.num_nodes = state.shape[0]
-        if hasattr(edge_index, 'mesh_id'):
-            mesh_data.mesh_id = edge_index.mesh_id
         
-        # Velocity for advection: x_momentum → [v_x, 0] in 2D
-        v_x = dynamic_feats[:, self.velocity_indices[0]:self.velocity_indices[0] + 1]
+        # --- 3. Velocity from RAW dynamic features (physical meaning preserved) ---
+        density_raw = dynamic_feats[:, 0:1]
+        x_mom_raw = dynamic_feats[:, self.velocity_indices[0]:self.velocity_indices[0] + 1]
+        safe_density = torch.clamp(density_raw.abs(), min=1e-6)
+        v_x = x_mom_raw / safe_density
         velocity = torch.cat([v_x, torch.zeros_like(v_x)], dim=1)  # [N, 2]
         
-        # --- 3. Physics + SPADE per variable ---
+        # --- 4. Physics (on RAW dynamic) + SPADE per variable ---
         t_dot_parts = []
         
         for i in range(self.num_dynamic_feats):
@@ -211,6 +243,7 @@ class ShockTubeDifferentiator(nn.Module):
             if mar_block is not None:
                 phys_feats = []
                 
+                # Advection and diffusion operate on RAW dynamic features
                 if self.list_adv[i] is not None:
                     adv = self.list_adv[i](dynamic_feats[:, i:i+1], velocity, mesh_data)
                     phys_feats.append(adv)
@@ -219,6 +252,7 @@ class ShockTubeDifferentiator(nn.Module):
                     dif = self.list_dif[i](dynamic_feats[:, i:i+1], mesh_data)
                     phys_feats.append(dif)
                 
+                # SPADE fuses FiLM'd learned features with raw physics features
                 out = mar_block(
                     learned_features,
                     torch.cat(phys_feats, dim=1),

@@ -25,8 +25,8 @@ export MKL_NUM_THREADS=1
 # PATHS  (EDIT THESE)
 # ============================================================
 MODEL_PATH="/scratch/jtb3sud/river_v2_training_scheduled/best_model.pth"
-TEST_DIR="/standard/sds_baek_energetic/HEC_RAS (River)/pt_val_normalized"
-OUTPUT_DIR="/scratch/jtb3sud/river_v2_training_scheduled/evaluation"
+TEST_DIR="/standard/sds_baek_energetic/HEC_RAS (River)/pt_test_normalized"
+OUTPUT_DIR="/scratch/jtb3sud/river_v2_training_scheduled/evaluation/test"
 
 # HEC-RAS mesh files for PolyCollection rendering (optional but recommended)
 HEC_RAS_DIR="/standard/sds_baek_energetic/HEC_RAS (River)"
@@ -63,7 +63,7 @@ ZERO_INIT="--zero_init"
 # ============================================================
 EVAL_MODE="both"                 # rollout, snapshot, or both
 MAX_SEQUENCES=""                 # empty = all, or set e.g. 10
-ROLLOUT_STEPS=50                 # number of autoregressive steps
+ROLLOUT_STEPS=112                 # number of autoregressive steps
 
 # ============================================================
 # VISUALIZATION SETTINGS

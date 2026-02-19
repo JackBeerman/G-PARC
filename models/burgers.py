@@ -1,7 +1,7 @@
 import torch.nn as nn
 from integrator.numerical import Euler, Heun, RK4
 import torch
-from differentiator.differential_operators import DiffusionMLS, SolveWeightLST2d
+from differentiator.hop import DiffusionMLS, SolveWeightLST2d
 
 class GPARC_Burgers_Numerical(nn.Module):
     """

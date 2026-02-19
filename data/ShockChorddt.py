@@ -1,17 +1,9 @@
-import pickle
 from pathlib import Path
 from typing import List, Iterator, Union
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import os
-from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import IterableDataset, DataLoader
 from torch_geometric.data import Data
-from torch_geometric.nn import GATConv, GraphUNet
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
 
 class ShockTubeRolloutDataset(IterableDataset):

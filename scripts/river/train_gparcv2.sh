@@ -33,7 +33,7 @@ OUTPUT_DIR="/scratch/jtb3sud/river_v2_training_scheduled/river_v2_training_seq20
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # Resume from best seq_len=1 checkpoint
-RESUME_CKPT="/scratch/jtb3sud/river_v2_training_scheduled/best_model.pt"
+RESUME_CKPT="/scratch/jtb3sud/river_v2_training_scheduled/best_model.pth"
 
 # ============================================================
 # TRAINING HYPERPARAMETERS

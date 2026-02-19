@@ -70,6 +70,7 @@ VELOCITY_INDEX=1             # x_momentum in used dynamic features
 GLOBAL_PARAM_DIM=3           # pressure, density, delta_t
 GLOBAL_EMBED_DIM=64
 INTEGRATOR="euler"
+DIFFUSION_TYPE="fd"           # FD for structured 64x64 grid (MLS Laplacian ill-conditioned with 4 neighbors)
 
 # SPADE
 SPADE_HEADS=4
@@ -104,6 +105,7 @@ apptainer run --nv "$CONTAINER" train_gparcv2.py \
     --global_param_dim "$GLOBAL_PARAM_DIM" \
     --global_embed_dim "$GLOBAL_EMBED_DIM" \
     --integrator "$INTEGRATOR" \
+    --diffusion_type "$DIFFUSION_TYPE" \
     --num_layers "$NUM_LAYERS" \
     --hidden_channels "$HIDDEN_CHANNELS" \
     --feature_out_channels "$FEATURE_OUT_CHANNELS" \

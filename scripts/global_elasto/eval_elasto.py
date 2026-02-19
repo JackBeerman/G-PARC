@@ -1322,10 +1322,9 @@ def evaluate_elastoplastic(model_path, test_dir, test_files, output_dir, args):
         pos_std=pos_std,
         norm_method=norm_method,
         max_position=max_position,
-        min_neighbors=5,   # Damp Laplacian at nodes with <5 neighbors
-        use_2hop_extension=False
+        use_2hop_extension=True
     )
-    
+    #        min_neighbors=5,   # Damp Laplacian at nodes with <5 neighbors
     feature_extractor = GraphConvFeatureExtractorV2(
         in_channels=args.num_static_feats,
         hidden_channels=args.hidden_channels,

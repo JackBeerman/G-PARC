@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J eval_2hop
-#SBATCH -o eval_2hop.out
-#SBATCH -e eval_2hop.err
+#SBATCH -J mod
+#SBATCH -o mod.out
+#SBATCH -e mod.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
 #SBATCH -t 00:30:00
@@ -25,7 +25,7 @@ export MKL_NUM_THREADS=1
 # ============================================================
 MODEL_PATH="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
 TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/test"
-OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/2hop/evaluation/test"
+OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/2hop/evaluation/test/mod"
 
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
@@ -112,7 +112,7 @@ echo ""
 echo "Starting evaluation..."
 echo ""
 
-apptainer run --nv "$CONTAINER" eval_elasto.py \
+apptainer run --nv "$CONTAINER" mod.py \
     --model_path "$MODEL_PATH" \
     --test_dir "$TEST_DIR" \
     --output_dir "$OUTPUT_DIR" \

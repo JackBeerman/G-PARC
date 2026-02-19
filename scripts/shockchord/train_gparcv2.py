@@ -102,10 +102,10 @@ def create_model(args, sample_data):
     print(f"  Dynamic feats (raw): {args.num_dynamic_feats + len(args.skip_dynamic_indices)}")
     print(f"  Dynamic feats (used): {args.num_dynamic_feats} (skip {args.skip_dynamic_indices})")
     print(f"  Advection: all {args.num_dynamic_feats} features")
+    print(f"  Diffusion: {args.diffusion_type}")
     print(f"  Velocity index: {args.velocity_index} (x_momentum)")
     print(f"  Global embed dim: {args.global_embed_dim}")
     print(f"  Integrator: {args.integrator}")
-    print(f"  2-hop extension: DISABLED")
     
     derivative_solver = ShockTubeDifferentiator(
         num_static_feats=args.num_static_feats,
@@ -115,9 +115,11 @@ def create_model(args, sample_data):
         laplacian_solver=laplacian_solver,
         n_fe_features=args.feature_out_channels,
         global_embed_dim=args.global_embed_dim,
+        global_param_dim=args.global_param_dim,
         list_adv_idx=list(range(args.num_dynamic_feats)),
         list_dif_idx=list(range(args.num_dynamic_feats)),
         velocity_indices=[args.velocity_index],
+        diffusion_type=args.diffusion_type,
         spade_random_noise=args.spade_random_noise,
         heads=args.spade_heads,
         concat=args.spade_concat,
@@ -290,6 +292,12 @@ def main():
     # Integrator
     parser.add_argument("--integrator", type=str, default="euler",
                         choices=["euler", "heun", "rk4"])
+    
+    # Diffusion operator
+    parser.add_argument("--diffusion_type", type=str, default="mls",
+                        choices=["fd", "mls", "none"],
+                        help="Diffusion operator: 'fd' (finite difference, for structured grids), "
+                             "'mls' (MLS polynomial, for unstructured), 'none' (disable)")
     
     # Differentiator (SPADE)
     parser.add_argument("--spade_random_noise", action="store_true", default=False)

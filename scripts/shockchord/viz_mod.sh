@@ -4,7 +4,7 @@
 #SBATCH -o %x.out                   
 #SBATCH -e %x.err                   
 #SBATCH -p gpu                      
-#SBATCH --gres=gpu:a6000:1           
+#SBATCH --gres=gpu         
 #SBATCH -t 00:10:00                  
 #SBATCH -c 4                        
 #SBATCH --mem=32G                   
@@ -15,7 +15,7 @@ module load apptainer
 
 # Configuration options
 # Set EVAL_MODE to either "directory" or "files"
-EVAL_MODE="directory"  # Change to "files" to test specific files
+EVAL_MODE="files"  # Change to "files" to test specific files
 
 # Define paths
 MODEL_PATH="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/shock_tube_20250927_104720_run_mod10_750/shock_tube_best_model.pth"
@@ -23,19 +23,19 @@ MODEL_PATH="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5m
 # For directory mode
 TEST_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/test_cases_normalized"
 
-# For specific files mode - update these paths as needed
+#For specific files mode - update these paths as needed
 SPECIFIC_FILES=(
-"/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/train_cases_normalized/p_L_137500_rho_L_2.0_train_with_pos_normalized.pt"
-"/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/train_cases_normalized/p_L_112500_rho_L_1.25_train_with_pos_normalized.pt"
+"/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/test_cases_normalized/p_L_162500_rho_L_0.5_test_with_pos_normalized.pt"
+"/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/test_cases_normalized/p_L_56250_rho_L_0.625_test_with_pos_normalized.pt"
+"/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/test_cases_normalized/p_L_143750_rho_L_0.5625_test_with_pos_normalized.pt"
 )
 
-OUTPUT_DIR="/project/vil_baek/psaap/rollout_evaluation_varydt_params$(date +%Y%m%d_%H%M%S)_test_mod"
+OUTPUT_DIR="/scratch/jtb3sud/parcv1shocktube/test"
 
 # Container path
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # Model architecture parameters (updated for new configurable solver architecture)
-SEQ_LEN=1
 NUM_STATIC_FEATS=2
 NUM_DYNAMIC_FEATS=3  # Updated: using 3 after skipping meaningless variable
 SKIP_INDICES="2"     # Skip the third variable (0-indexed)

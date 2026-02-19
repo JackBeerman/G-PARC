@@ -504,6 +504,101 @@ class DiffusionMLS(nn.Module):
         return apply_laplacian(mesh_data, state_variable, weights)
 
 
+class FDLaplacian(nn.Module):
+    """
+    Finite Difference Laplacian for uniform Cartesian grids.
+    
+    On a structured grid with cardinal (4-neighbor) connectivity and uniform
+    spacing h, the standard 5-point stencil is exact for polynomials up to
+    degree 2:
+    
+        ∇²u(i) = (1/h²) Σ_j∈N(i) [u(j) - u(i)]
+    
+    where N(i) are the cardinal neighbors of node i. For nodes with fewer
+    than 4 neighbors (boundaries/corners), the stencil uses only available
+    neighbors — equivalent to one-sided or reduced finite differences.
+    
+    This is preferred over MLS Laplacian on uniform Cartesian grids because:
+      - MLS with 5-term polynomial basis needs ≥5 neighbors (structured 
+        cardinal grids have exactly 4 interior, 2-3 at boundaries)
+      - MLS 2-hop extension adds diagonal neighbors at √2·h spacing,
+        creating ill-conditioned moment matrices on uniform grids
+      - FD stencil is exact for the grid topology it was designed for
+    
+    Grid spacing h is auto-detected from the mesh on first call and cached.
+    """
+    def __init__(self):
+        super().__init__()
+        self._h_sq_cache = {}
+    
+    def _get_cache_key(self, data):
+        if hasattr(data, 'mesh_id') and data.mesh_id is not None:
+            return data.mesh_id.item() if data.mesh_id.numel() == 1 else tuple(data.mesh_id.tolist())
+        return data.pos.data_ptr()
+    
+    def _detect_grid_spacing(self, pos, edge_index):
+        """Auto-detect h² from uniform edge lengths."""
+        row, col = edge_index
+        edge_vecs = pos[col] - pos[row]
+        h_sq = (edge_vecs ** 2).sum(dim=1).median().detach()
+        return h_sq
+    
+    def forward(self, state_variable, mesh_data):
+        """
+        Compute ∇²u using finite difference stencil.
+        
+        Args:
+            state_variable: [N, C] field values
+            mesh_data: Data object with pos and edge_index
+            
+        Returns:
+            laplacian: [N, C] Laplacian values
+        """
+        key = self._get_cache_key(mesh_data)
+        
+        if key not in self._h_sq_cache:
+            h_sq = self._detect_grid_spacing(mesh_data.pos, mesh_data.edge_index)
+            self._h_sq_cache[key] = h_sq
+        
+        h_sq = self._h_sq_cache[key]
+        if h_sq.device != state_variable.device:
+            h_sq = h_sq.to(state_variable.device)
+            self._h_sq_cache[key] = h_sq
+        
+        row, col = mesh_data.edge_index
+        N = mesh_data.pos.shape[0] if hasattr(mesh_data, 'pos') else state_variable.shape[0]
+        
+        # Standard FD: ∇²u(i) = (1/h²) Σ_j [u(j) - u(i)]
+        diff = state_variable[col] - state_variable[row]
+        laplacian = torch.zeros(N, state_variable.shape[1], 
+                                device=state_variable.device, dtype=state_variable.dtype)
+        laplacian.index_add_(0, row, diff)
+        laplacian = laplacian / h_sq
+        
+        return laplacian
+    
+    def clear_caches(self):
+        self._h_sq_cache.clear()
+
+
+class DiffusionFD(nn.Module):
+    """
+    Finite Difference Diffusion operator for structured Cartesian grids.
+    
+    Drop-in replacement for DiffusionMLS with identical interface:
+        forward(state_variable, mesh_data) → [N, C]
+    
+    Uses the exact 5-point FD stencil instead of MLS polynomial fitting.
+    Preferred for uniform grids where MLS Laplacian is ill-conditioned.
+    """
+    def __init__(self):
+        super().__init__()
+        self.fd_laplacian = FDLaplacian()
+    
+    def forward(self, state_variable, mesh_data):
+        return self.fd_laplacian(state_variable, mesh_data)
+
+
 def compute_strain_features(mesh_data, displacement, gradient_solver):
     strain_op = StrainOperator(gradient_solver)
     return strain_op(mesh_data, displacement)
@@ -517,6 +612,7 @@ def compute_equilibrium_residual(mesh_data, displacement, laplacian_solver):
 __all__ = [
     'SolveGradientsLST', 'SolveWeightLST2d', 'apply_laplacian',
     'StrainOperator', 'StrainMLS', 'AdvectionMLS', 'DiffusionMLS',
+    'FDLaplacian', 'DiffusionFD',
     'compute_strain_features', 'compute_equilibrium_residual',
     'compute_neighbor_damping', 'compute_2hop_extension'
 ]

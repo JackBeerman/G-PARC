@@ -363,6 +363,8 @@ class ShockTubeEvaluator:
                 self.pressure_denorm = gp_section['pressure']
             if 'density' in gp_section:
                 self.density_denorm = gp_section['density']
+            elif 'density_param' in gp_section:
+                self.density_denorm = gp_section['density_param']
 
             # Fallback: check normalization_params too
             if self.delta_t_denorm is None and 'delta_t' in np_section:
@@ -443,8 +445,8 @@ class ShockTubeEvaluator:
         global_attrs = self.model._extract_global_attrs(first_data)
         global_embed = self.model.global_processor(global_attrs)
 
-        # Use delta_t from global params for integration
-        dt = first_data.global_delta_t.flatten()[0].item()
+        # dt=1.0: FiLM conditioning handles timestep variation
+        dt = 1.0
 
         # Initial dynamic state with skip logic
         F_prev = self.model._extract_dynamic(first_data.x)
@@ -459,6 +461,7 @@ class ShockTubeEvaluator:
                 dynamic_state=F_prev.clone(),
                 edge_index=edge_index,
                 global_embed=global_embed,
+                global_attrs=global_attrs,
                 dt=dt,
             )
             predictions.append(F_pred)
@@ -474,7 +477,7 @@ class ShockTubeEvaluator:
         # Compute global embedding (once, shared across all steps)
         global_attrs = self.model._extract_global_attrs(first_data)
         global_embed = self.model.global_processor(global_attrs)
-        dt = first_data.global_delta_t.flatten()[0].item()
+        dt = 1.0  # FiLM handles dt conditioning
 
         for step in range(num_steps):
             data_t = simulation[step]
@@ -489,6 +492,7 @@ class ShockTubeEvaluator:
                 dynamic_state=F_gt,
                 edge_index=edge_index,
                 global_embed=global_embed,
+                global_attrs=global_attrs,
                 dt=dt,
             )
             predictions.append(F_pred)
@@ -1207,9 +1211,11 @@ def evaluate_shocktube(model_path, test_dir, test_files, output_dir, args):
         laplacian_solver=laplacian_solver,
         n_fe_features=args.feature_out_channels,
         global_embed_dim=args.global_embed_dim,
+        global_param_dim=args.global_param_dim,
         list_adv_idx=list(range(args.num_dynamic_feats)),
         list_dif_idx=list(range(args.num_dynamic_feats)),
         velocity_indices=[args.velocity_index],
+        diffusion_type=args.diffusion_type,
         spade_random_noise=args.spade_random_noise,
         heads=args.spade_heads,
         concat=args.spade_concat,
@@ -1464,6 +1470,10 @@ def main():
     # Integrator
     parser.add_argument("--integrator", type=str, default="euler",
                         choices=["euler", "heun", "rk4"])
+
+    # Diffusion operator
+    parser.add_argument("--diffusion_type", type=str, default="mls",
+                        choices=["fd", "mls", "none"])
 
     # Differentiator (SPADE)
     parser.add_argument("--spade_random_noise", action="store_true", default=False)

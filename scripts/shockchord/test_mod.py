@@ -50,7 +50,6 @@ from data.ShockChorddt import ShockTubeRolloutDataset, get_simulation_ids
 # NEW: Import the refactored model components
 from utilities.featureextractor import FeatureExtractorGNN
 from utilities.embed import SimulationConditionedLayerNorm, GlobalParameterProcessor, GlobalModulatedGNN
-from utilities.trainer import train_and_validate, load_model, plot_loss_curves
 from differentiator.differentiator import DerivativeGNN
 from integrator.integrator import IntegralGNN
 from models.shocktube import GPARC
@@ -91,6 +90,40 @@ class GPARCRolloutEvaluator:
                     target_feat_list.append(target_y[:, i:i+1])
             return torch.cat(target_feat_list, dim=-1) if target_feat_list else target_y
         return target_y
+
+    def compute_rrmse(self, predictions, targets):
+        """RRMSE = sqrt( (1/T) * sum_t [ MSE_t / ||targ_t||_inf^2 ] )"""
+        all_preds, all_targs = [], []
+        for seq_pred, seq_targ in zip(predictions, targets):
+            for p, t in zip(seq_pred, seq_targ):
+                all_preds.append(p.numpy() if torch.is_tensor(p) else p)
+                all_targs.append(t.numpy() if torch.is_tensor(t) else t)
+        ratios = []
+        for p, t in zip(all_preds, all_targs):
+            mse = np.mean((p - t) ** 2)
+            ref_max = np.max(np.abs(t))
+            if ref_max > 1e-12:
+                ratios.append(mse / ref_max ** 2)
+        return float(np.sqrt(np.mean(ratios))) if ratios else float('inf')
+    
+    def compute_rrmse_per_variable(self, predictions, targets):
+        """Per-variable RRMSE."""
+        all_preds, all_targs = [], []
+        for seq_pred, seq_targ in zip(predictions, targets):
+            for p, t in zip(seq_pred, seq_targ):
+                all_preds.append(p.numpy() if torch.is_tensor(p) else p)
+                all_targs.append(t.numpy() if torch.is_tensor(t) else t)
+        result = {}
+        for ci, name in enumerate(self.var_names):
+            ratios = []
+            for p, t in zip(all_preds, all_targs):
+                if ci < p.shape[1] and ci < t.shape[1]:
+                    mse = np.mean((p[:, ci] - t[:, ci]) ** 2)
+                    ref_max = np.max(np.abs(t[:, ci]))
+                    if ref_max > 1e-12:
+                        ratios.append(mse / ref_max ** 2)
+            result[name] = float(np.sqrt(np.mean(ratios))) if ratios else float('inf')
+        return result
     
     def load_denormalization_params(self, metadata_file):
         """Load denormalization parameters from normalization metadata."""
@@ -309,6 +342,44 @@ class GPARCRolloutEvaluator:
             F_prev = F_pred
     
         return predictions
+    def generate_snapshot(self, simulation, num_steps):
+        """Single-step predictions from ground truth at each timestep."""
+        predictions = []
+    
+        # Extract global parameters
+        initial_data = simulation[0]
+        global_attrs = torch.stack([
+            initial_data.global_pressure.flatten()[0],
+            initial_data.global_density.flatten()[0],
+            initial_data.global_delta_t.flatten()[0]
+        ])
+    
+        global_embed = self.model.global_processor(global_attrs)
+        static_feats_0 = initial_data.x[:, :self.model.num_static_feats]
+        edge_index_0 = initial_data.edge_index
+        learned_static_features = self.model.feature_extractor(static_feats_0, edge_index_0)
+        learned_static_features = self.model.feature_norm(learned_static_features, global_attrs)
+    
+        for step in range(num_steps):
+            # Use ground truth dynamic features at each step
+            all_dynamic_feats = simulation[step].x[:,
+                self.model.num_static_feats:
+                self.model.num_static_feats + self.model.num_dynamic_feats + len(self.model.skip_dynamic_indices)
+            ]
+            keep_indices = [i for i in range(all_dynamic_feats.shape[1]) if i not in self.model.skip_dynamic_indices]
+            dynamic_feats_t = all_dynamic_feats[:, keep_indices]
+    
+            F_prev_used = self.model.derivative_norm(dynamic_feats_t, global_attrs)
+            global_context = global_embed.unsqueeze(0).repeat(initial_data.num_nodes, 1)
+            Fdot_input = torch.cat([learned_static_features, F_prev_used, global_context], dim=-1)
+    
+            Fdot = self.model.derivative_solver(Fdot_input, edge_index_0)
+            Fint = self.model.integral_solver(Fdot, edge_index_0)
+            F_pred = F_prev_used + Fint
+    
+            predictions.append(F_pred)
+    
+        return predictions
 
     def evaluate_rollout_predictions(self, simulations, rollout_steps=10):
         """
@@ -441,6 +512,38 @@ class GPARCRolloutEvaluator:
         
         print(f"\nGenerated rollout predictions for {len(all_predictions)} simulations")
         return all_predictions, all_targets, metadata
+
+    def evaluate_snapshot_predictions(self, simulations, num_steps=10):
+        """Generate snapshot (single-step) predictions."""
+        all_predictions = []
+        all_targets = []
+    
+        with torch.no_grad():
+            for sim_idx, simulation in enumerate(tqdm(simulations, desc="Generating snapshot predictions")):
+                for data in simulation:
+                    data.x = data.x.to(self.device)
+                    data.y = data.y.to(self.device)
+                    data.edge_index = data.edge_index.to(self.device)
+                    data = self._extract_global_attributes(data, sim_idx)
+                    data.global_pressure = data.global_pressure.to(self.device)
+                    data.global_density = data.global_density.to(self.device)
+                    data.global_delta_t = data.global_delta_t.to(self.device)
+                    if getattr(data, 'edge_attr', None) is not None:
+                        data.edge_attr = data.edge_attr.to(self.device)
+    
+                actual_steps = min(num_steps, len(simulation) - 1)
+                snapshot_preds = self.generate_snapshot(simulation, actual_steps)
+    
+                snapshot_targets = []
+                for i in range(actual_steps):
+                    target_y = simulation[i].y.cpu()
+                    target_y = self.process_targets(target_y, self.model.skip_dynamic_indices)
+                    snapshot_targets.append(target_y)
+    
+                all_predictions.append([pred.cpu() for pred in snapshot_preds])
+                all_targets.append(snapshot_targets)
+    
+        return all_predictions, all_targets
     
     def _track_delta_t_performance(self, predictions, targets, delta_t_str):
         """Track performance metrics for specific delta_t values."""
@@ -1362,7 +1465,7 @@ class GPARCRolloutEvaluator:
             gif_filename = f'rollout_error_evolution_{performance_category}_{case_name}_dt{delta_t_str}'
         gif_path = output_dir / f'{gif_filename}.gif'
         
-        writer = PillowWriter(fps=2)
+        writer = PillowWriter(fps=10)
         anim.save(gif_path, writer=writer)
         plt.close(fig)
         
@@ -1720,18 +1823,68 @@ def evaluate_gparc_rollout(model_path, test_dir, test_files, output_dir, args):
     fig = evaluator.plot_prediction_vs_target_scatter(predictions, targets)
     fig.savefig(output_path / 'rollout_scatter.png', dpi=300, bbox_inches='tight')
     plt.close(fig)
-    
-    # Create animated GIFs for selected simulations (now with delta_t in filenames)
-    print("Creating animated GIFs...")
+
+    # Print summary
+    print(f"\nModel Performance Summary:")
+    print("="*50)
+    for var_name in evaluator.var_names:
+        if var_name in metrics:
+            r2 = metrics[var_name]['r2']
+            rmse = metrics[var_name]['rmse']
+            print(f"{var_name.title()}: R²={r2:.4f}, RMSE={rmse:.6f}")
+
+    overall = metrics['overall']
+    print(f"\nOverall: R²={overall['r2']:.4f}, RMSE={overall['rmse']:.6f}")
+
+    # ── RRMSE for rollout ──
+    rollout_rrmse = evaluator.compute_rrmse(predictions, targets)
+    rollout_rrmse_per = evaluator.compute_rrmse_per_variable(predictions, targets)
+    print(f"\nRollout RRMSE:")
+    print(f"  RRMSE Total:  {rollout_rrmse:.6f}")
+    for k, v in rollout_rrmse_per.items():
+        print(f"  RRMSE {k:>14s}: {v:.6f}")
+    metrics['RRMSE_total'] = rollout_rrmse
+    for k, v in rollout_rrmse_per.items():
+        metrics[f'RRMSE_{k}'] = v
+
+    # ── Snapshot evaluation ──
+    print(f"\nGenerating snapshot predictions ({args.rollout_steps} steps)...")
+    snap_preds, snap_targs = evaluator.evaluate_snapshot_predictions(
+        simulations, num_steps=args.rollout_steps)
+    snap_rrmse = evaluator.compute_rrmse(snap_preds, snap_targs)
+    snap_rrmse_per = evaluator.compute_rrmse_per_variable(snap_preds, snap_targs)
+    print(f"\nSnapshot RRMSE:")
+    print(f"  RRMSE Total:  {snap_rrmse:.6f}")
+    for k, v in snap_rrmse_per.items():
+        print(f"  RRMSE {k:>14s}: {v:.6f}")
+
+    # ── Comparison ──
+    print(f"\n{'='*60}")
+    print(f"SNAPSHOT vs ROLLOUT COMPARISON")
+    print(f"{'='*60}")
+    print(f"  {'Metric':<25} {'Snapshot':>12} {'Rollout':>12} {'Ratio':>10}")
+    print(f"  {'-'*59}")
+    ratio = rollout_rrmse / snap_rrmse if snap_rrmse > 0 else float('inf')
+    print(f"  {'RRMSE_total':<25} {snap_rrmse:>12.6f} {rollout_rrmse:>12.6f} {ratio:>10.1f}x")
+    for k in evaluator.var_names:
+        sv = snap_rrmse_per.get(k, 0)
+        rv = rollout_rrmse_per.get(k, 0)
+        r = rv / sv if sv > 0 else float('inf')
+        print(f"  {'RRMSE_' + k:<25} {sv:>12.6f} {rv:>12.6f} {r:>10.1f}x")
+
+    # ── GIFs ──
+    print("\nCreating animated GIFs...")
     for sim_idx in selected_indices:
         print(f"Creating GIFs for simulation {sim_idx}...")
         performance_cat = get_performance_category(sim_idx, predictions, targets)
         evaluator.create_rollout_gifs(predictions, targets, metadata, sim_idx, output_path, performance_cat)
         evaluator.create_error_evolution_gif(predictions, targets, metadata, sim_idx, output_path, performance_cat)
-    
-    # Save results with delta_t analysis
+
+    # ── Save results ──
     results = {
         'metrics': metrics,
+        'rollout_rrmse': {'RRMSE_total': rollout_rrmse, **{f'RRMSE_{k}': v for k, v in rollout_rrmse_per.items()}},
+        'snapshot_rrmse': {'RRMSE_total': snap_rrmse, **{f'RRMSE_{k}': v for k, v in snap_rrmse_per.items()}},
         'delta_t_analysis': delta_t_analysis,
         'metadata': metadata,
         'model_info': {
@@ -1739,7 +1892,6 @@ def evaluate_gparc_rollout(model_path, test_dir, test_files, output_dir, args):
             'test_simulations': len(predictions),
             'rollout_steps': args.rollout_steps,
             'device': str(device),
-            'derivative_solver_input_channels': model.derivative_solver.in_channels,
             'skip_dynamic_indices': model.skip_dynamic_indices,
             'num_dynamic_feats': model.num_dynamic_feats,
             'test_source': 'specific_files' if test_files else 'directory',
@@ -1747,39 +1899,11 @@ def evaluate_gparc_rollout(model_path, test_dir, test_files, output_dir, args):
             'test_dir': str(test_dir) if test_dir else None
         }
     }
-    
+
     with open(output_path / 'rollout_evaluation_results.json', 'w') as f:
         json.dump(results, f, indent=2)
-    
-    # Print summary
-    print(f"\nRollout evaluation complete! Results saved to: {output_path}")
-    print("\nModel Performance Summary:")
-    print("="*50)
-    for var_name in evaluator.var_names:
-        if var_name in metrics:
-            r2 = metrics[var_name]['r2']
-            rmse = metrics[var_name]['rmse']
-            print(f"{var_name.title()}: R²={r2:.4f}, RMSE={rmse:.6f}")
-    
-    overall = metrics['overall']
-    print(f"\nOverall: R²={overall['r2']:.4f}, RMSE={overall['rmse']:.6f}")
-    
-    # Print delta_t summary
-    if delta_t_analysis:
-        print(f"\nDelta_t Analysis Summary:")
-        print("="*50)
-        delta_t_values = sorted([float(dt) for dt in delta_t_analysis.keys()])
-        
-        print(f"Analyzed {len(delta_t_values)} different delta_t values:")
-        for dt_val in delta_t_values:
-            dt_str = evaluator._format_delta_t_string(dt_val)
-            if dt_str in delta_t_analysis:
-                analysis = delta_t_analysis[dt_str]
-                overall_r2 = analysis['overall']['r2']['mean']
-                overall_rmse = analysis['overall']['rmse']['mean']
-                n_sims = analysis['num_simulations']
-                print(f"  Δt={dt_val:.4f}: R²={overall_r2:.4f}, RMSE={overall_rmse:.6f} ({n_sims} simulations)")
-    
+
+    print(f"\nDone! Results: {output_path}")
     return metrics, evaluator
 
 
