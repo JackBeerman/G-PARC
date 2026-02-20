@@ -136,32 +136,47 @@ def extract_global_params_from_data(data):
     """Extract [pressure, density, delta_t] as raw scalar values from a Data object."""
     vals = {}
     
-    # Pressure
+    def to_float(v):
+        """Safely convert tensor or scalar to float."""
+        if isinstance(v, torch.Tensor):
+            return v.item()
+        return float(v)
+    
+    # Try global_params tensor first (most reliable — always has all 3)
+    if hasattr(data, 'global_params'):
+        gp = data.global_params
+        if torch.is_tensor(gp) and gp.numel() >= 3:
+            vals = {
+                'pressure': gp[0].item(),
+                'density': gp[1].item(),
+                'delta_t': gp[2].item(),
+            }
+            return vals
+    
+    # Fallback: individual attributes
     for attr in ['global_pressure', 'pressure']:
         if hasattr(data, attr):
-            vals['pressure'] = getattr(data, attr).item()
+            try:
+                vals['pressure'] = to_float(getattr(data, attr))
+            except (ValueError, TypeError):
+                pass
             break
     
-    # Density
     for attr in ['global_density', 'density_param']:
         if hasattr(data, attr):
-            vals['density'] = getattr(data, attr).item()
+            try:
+                vals['density'] = to_float(getattr(data, attr))
+            except (ValueError, TypeError):
+                pass
             break
     
-    # Delta_t
     for attr in ['global_delta_t', 'delta_t']:
         if hasattr(data, attr):
-            vals['delta_t'] = getattr(data, attr).item()
+            try:
+                vals['delta_t'] = to_float(getattr(data, attr))
+            except (ValueError, TypeError):
+                pass
             break
-    
-    # Fallback to global_params tensor
-    if not vals and hasattr(data, 'global_params') and data.global_params.numel() >= 3:
-        gp = data.global_params
-        vals = {
-            'pressure': gp[0].item(),
-            'density': gp[1].item(),
-            'delta_t': gp[2].item(),
-        }
     
     return vals
 
@@ -299,23 +314,24 @@ def load_model_gparcv1(ckpt_path, sample_data, device):
 
 
 def load_model_gparcv2(ckpt_path, sample_data, device):
-    """Load G-PARCv2 shocktube model."""
+    """Load G-PARCv2 shocktube model (ShockTubeDifferentiator + FiLM)."""
     from models.shocktube_gparcv2 import GPARC_ShockTube_V2
+    from differentiator.shocktubedifferentiator import ShockTubeDifferentiator
+    from utilities.featureextractor import GraphConvFeatureExtractorV2
+    from differentiator.hop import SolveGradientsLST, SolveWeightLST2d
 
     ckpt_dir = Path(ckpt_path).parent
     config_path = ckpt_dir / "config.json"
     config = json.load(open(config_path)) if config_path.exists() else {}
 
-    # Import required components
-    from utilities.featureextractor import GraphConvFeatureExtractorV2
-    from differentiator.differentiator import ElastoPlasticDifferentiator
-    from differentiator.hop import SolveGradientsLST, SolveWeightLST2d
-
+    # Architecture params matching train_gparcv2.sh
     sf = config.get('num_static_feats', NUM_STATIC)
     df = config.get('num_dynamic_feats', NUM_USED_DYNAMIC)
     feat_out = config.get('feature_out_channels', 128)
-    hidden = config.get('hidden_channels', 128)
+    hidden = config.get('hidden_channels', 64)
     n_layers = config.get('num_layers', 4)
+    global_embed_dim = config.get('global_embed_dim', 64)
+    global_param_dim = config.get('global_param_dim', 3)
 
     norm_stats_path = ckpt_dir / "normalization_stats.json"
     norm_stats = json.load(open(norm_stats_path)) if norm_stats_path.exists() else {}
@@ -328,47 +344,30 @@ def load_model_gparcv2(ckpt_path, sample_data, device):
 
     feature_extractor = GraphConvFeatureExtractorV2(
         in_channels=sf, hidden_channels=hidden, out_channels=feat_out,
-        num_layers=n_layers, dropout=config.get('dropout', 0.0),
+        num_layers=n_layers, dropout=config.get('dropout', 0.2),
         use_layer_norm=config.get('use_layer_norm', True),
         use_relative_pos=config.get('use_relative_pos', True),
     )
 
-    # Build differentiator
-    # Shocktube uses ADR differentiator — check config
-    diff_type = config.get('differentiator_type', 'elastoplastic')
-
-    if diff_type == 'adr' or 'adr' in str(config.get('architecture', '')).lower():
-        from differentiator.differentiator import ADRDifferentiator
-        derivative_solver = ADRDifferentiator(
-            num_static_feats=sf, num_dynamic_feats=df,
-            feature_extractor=feature_extractor,
-            gradient_solver=gradient_solver, laplacian_solver=laplacian_solver,
-            n_fe_features=feat_out,
-            list_advection_idx=config.get('list_advection_idx', list(range(df))),
-            list_diffusion_idx=config.get('list_diffusion_idx', list(range(df))),
-            list_reaction_idx=config.get('list_reaction_idx', list(range(df))),
-            spade_random_noise=config.get('spade_random_noise', False),
-            heads=config.get('spade_heads', 4),
-            concat=config.get('spade_concat', True),
-            dropout=config.get('spade_dropout', 0.1),
-            zero_init=config.get('zero_init', True),
-        )
-    else:
-        derivative_solver = ElastoPlasticDifferentiator(
-            num_static_feats=sf, num_dynamic_feats=df,
-            feature_extractor=feature_extractor,
-            gradient_solver=gradient_solver, laplacian_solver=laplacian_solver,
-            n_fe_features=feat_out,
-            list_strain_idx=config.get('list_strain_idx', list(range(df))),
-            list_laplacian_idx=config.get('list_laplacian_idx', list(range(df))),
-            spade_random_noise=config.get('spade_random_noise', False),
-            heads=config.get('spade_heads', 4),
-            concat=config.get('spade_concat', True),
-            dropout=config.get('spade_dropout', 0.1),
-            use_von_mises=config.get('use_von_mises', False),
-            use_volumetric=config.get('use_volumetric', False),
-            zero_init=config.get('zero_init', True),
-        )
+    derivative_solver = ShockTubeDifferentiator(
+        num_static_feats=sf,
+        num_dynamic_feats=df,
+        feature_extractor=feature_extractor,
+        gradient_solver=gradient_solver,
+        laplacian_solver=laplacian_solver,
+        n_fe_features=feat_out,
+        global_embed_dim=global_embed_dim,
+        global_param_dim=global_param_dim,
+        list_adv_idx=list(range(df)),
+        list_dif_idx=list(range(df)),
+        velocity_indices=[config.get('velocity_index', 1)],
+        diffusion_type=config.get('diffusion_type', 'fd'),
+        spade_random_noise=config.get('spade_random_noise', False),
+        heads=config.get('spade_heads', 4),
+        concat=config.get('spade_concat', True),
+        dropout=config.get('spade_dropout', 0.1),
+        zero_init=config.get('zero_init', False),
+    )
 
     if not hasattr(sample_data, 'pos') or sample_data.pos is None:
         sample_data.pos = sample_data.x[:, :sf]
@@ -380,10 +379,8 @@ def load_model_gparcv2(ckpt_path, sample_data, device):
         num_static_feats=sf,
         num_dynamic_feats=df,
         skip_dynamic_indices=config.get('skip_dynamic_indices', SKIP_INDICES),
-        pos_mean=pos_mean,
-        pos_std=pos_std,
-        global_param_dim=config.get('global_param_dim', 3),
-        global_embed_dim=config.get('global_embed_dim', 32),
+        global_param_dim=global_param_dim,
+        global_embed_dim=global_embed_dim,
     )
 
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
@@ -957,18 +954,38 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
-    # Parse model specs
+    # Parse model specs — handle paths with spaces by reassembling
+    # Shell splits "gparcv1:/path/with spaces/file.pth" into multiple args
+    # We need to rejoin them: find tokens matching "type:" pattern, everything
+    # until the next "type:" token is part of the path
+    raw_specs = args.models
     model_specs = {}
-    for spec in args.models:
-        parts = spec.split(':')
-        if len(parts) != 2:
-            print(f"⚠ Invalid model spec '{spec}', expected type:path")
-            continue
-        mtype, mpath = parts
-        if not Path(mpath).exists():
-            print(f"⚠ Checkpoint not found: {mpath}")
-            continue
-        model_specs[mtype] = mpath
+    
+    i = 0
+    while i < len(raw_specs):
+        token = raw_specs[i]
+        # Check if this token starts with a known model type prefix
+        colon_idx = token.find(':')
+        if colon_idx > 0 and token[:colon_idx] in LOADERS:
+            mtype = token[:colon_idx]
+            path_parts = [token[colon_idx + 1:]]
+            # Collect subsequent tokens until we hit another model spec or end
+            j = i + 1
+            while j < len(raw_specs):
+                next_colon = raw_specs[j].find(':')
+                if next_colon > 0 and raw_specs[j][:next_colon] in LOADERS:
+                    break
+                path_parts.append(raw_specs[j])
+                j += 1
+            mpath = ' '.join(path_parts)
+            if Path(mpath).exists():
+                model_specs[mtype] = mpath
+            else:
+                print(f"⚠ Checkpoint not found: {mpath}")
+            i = j
+        else:
+            # Orphan token — skip
+            i += 1
 
     if not model_specs:
         print("No valid models specified!")
@@ -1103,13 +1120,13 @@ def main():
             per_sim_metrics[mtype] = sim_metrics
             per_step_rrmse[mtype] = step_rrmse_all
 
-            print(f"\n  Aggregate RRMSE: {agg['rrmse']:.4f}")
+            print(f"\n  Aggregate RRMSE: {agg['rrmse']:.4f}  RMSE: {agg['rmse']:.6f}")
             for vn in VAR_NAMES:
-                print(f"    {vn:15s} RRMSE={agg[f'{vn}_rrmse']:.4f}  R²={agg[f'{vn}_r2']:.4f}")
+                print(f"    {vn:15s} RRMSE={agg[f'{vn}_rrmse']:.4f}  RMSE={agg[f'{vn}_rmse']:.6f}  R²={agg[f'{vn}_r2']:.4f}")
 
     # ---- Print comparison table ----
     print(f"\n{'=' * 70}")
-    print("COMPARISON SUMMARY")
+    print("COMPARISON SUMMARY — RRMSE")
     print(f"{'=' * 70}")
 
     header = f"{'Model':20s}"
@@ -1124,6 +1141,24 @@ def main():
         for vn in VAR_NAMES:
             row += f" | {agg.get(f'{vn}_rrmse', float('nan')):12.4f}"
         row += f" | {agg.get('rrmse', float('nan')):10.4f}"
+        print(row)
+
+    print(f"\n{'=' * 70}")
+    print("COMPARISON SUMMARY — RMSE")
+    print(f"{'=' * 70}")
+
+    header = f"{'Model':20s}"
+    for vn in VAR_NAMES:
+        header += f" | {vn:>12s}"
+    header += f" | {'Overall':>10s}"
+    print(header)
+    print("-" * len(header))
+
+    for mtype, agg in all_agg_metrics.items():
+        row = f"{MODEL_LABELS.get(mtype, mtype):20s}"
+        for vn in VAR_NAMES:
+            row += f" | {agg.get(f'{vn}_rmse', float('nan')):12.6f}"
+        row += f" | {agg.get('rmse', float('nan')):10.6f}"
         print(row)
 
     # ---- Plots ----

@@ -5,7 +5,7 @@
 #SBATCH -e river_comparison.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
-#SBATCH -t 01:00:00
+#SBATCH -t 00:20:00
 #SBATCH -c 4
 #SBATCH --mem=40G
 

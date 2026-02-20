@@ -137,12 +137,25 @@ def compute_all_metrics(preds_phys, targs_phys, depth_threshold=0.3):
                 'rmse': float(np.sqrt(np.mean((all_p[:, vi] - all_t[:, vi]) ** 2))),
             }
     
+    # Mass balance percentage (volume = index 1)
+    mass_balance_pct = np.nan
+    if all_p.shape[1] > 1:
+        vol_pct_errors = []
+        for t in range(len(preds_phys)):
+            vol_pred = preds_phys[t][:, 1].sum()
+            vol_gt = targs_phys[t][:, 1].sum()
+            if abs(vol_gt) > 1e-12:
+                vol_pct_errors.append(abs(vol_pred - vol_gt) / abs(vol_gt) * 100)
+        if vol_pct_errors:
+            mass_balance_pct = float(np.mean(vol_pct_errors))
+    
     return {
         'rmse': float(np.sqrt(np.mean((all_p - all_t) ** 2))),
         'rrmse': float(compute_rrmse(preds_phys, targs_phys)),
         'depth_rmse': float(np.sqrt(np.mean((depth_p - depth_t) ** 2))),
         'depth_nse': float(nse(depth_p, depth_t)),
         'depth_csi': float(csi(depth_p, depth_t, depth_threshold)),
+        'mass_balance_pct': mass_balance_pct,
         'per_variable': per_var,
     }
 
@@ -167,7 +180,7 @@ def compute_segmented_metrics(preds_phys, targs_phys, segments, important_mask=N
             if s >= T:
                 continue
             
-            key = f"t{s}-{e_actual}"
+            key = f"t{s}-{e}"
             depth_pred_list, depth_targ_list = [], []
             
             for t in range(s, e_actual):
@@ -374,9 +387,26 @@ def rollout_gparcv2(model, simulation, rollout_steps, device):
         if not hasattr(d, 'pos') or d.pos is None:
             d.pos = d.x[:, :2]
     
-    # Initialize MLS
-    if hasattr(model, 'derivative_solver') and hasattr(model.derivative_solver, 'initialize_weights'):
-        model.derivative_solver.initialize_weights(simulation[0])
+    # Force MLS re-initialization for each simulation
+    # (different river meshes have different topologies)
+    deriv = model.derivative_solver
+    if hasattr(deriv, '_weights_initialized'):
+        deriv._weights_initialized = False
+    # Clear ALL solver caches (gradient uses geo_cache, laplacian uses weights_cache)
+    if hasattr(deriv, 'gradient_solver'):
+        gs = deriv.gradient_solver
+        if hasattr(gs, 'clear_caches'):
+            gs.clear_caches()
+        elif hasattr(gs, 'geo_cache'):
+            gs.geo_cache.clear()
+    if hasattr(deriv, 'laplacian_solver'):
+        ls = deriv.laplacian_solver
+        if hasattr(ls, 'clear_caches'):
+            ls.clear_caches()
+        elif hasattr(ls, 'weights_cache'):
+            ls.weights_cache.clear()
+    if hasattr(deriv, 'initialize_weights'):
+        deriv.initialize_weights(simulation[0])
     
     current = simulation[0].x[:, sf:sf + df].clone()
     static = simulation[0].x[:, :sf]
@@ -606,7 +636,11 @@ def plot_comparison_table(all_metrics, output_dir):
 def plot_nse_per_sim(all_results, output_dir):
     """Per-simulation NSE comparison across models."""
     model_names = list(all_results.keys())
-    sim_names = list(all_results[model_names[0]].keys())
+    # Use union of all sim names, sorted
+    all_sims = set()
+    for m in model_names:
+        all_sims.update(all_results[m].keys())
+    sim_names = sorted(all_sims)
     n_sims = len(sim_names)
     n_models = len(model_names)
     
@@ -614,7 +648,8 @@ def plot_nse_per_sim(all_results, output_dir):
     width = 0.8 / n_models
     
     for i, model_name in enumerate(model_names):
-        nses = [all_results[model_name][s]['depth_nse'] for s in sim_names]
+        nses = [all_results[model_name].get(s, {}).get('depth_nse', np.nan)
+                for s in sim_names]
         x = np.arange(n_sims) + i * width - 0.4 + width / 2
         ax.bar(x, nses, width=width, label=MODEL_LABELS.get(model_name, model_name),
                color=MODEL_COLORS.get(model_name, 'gray'), edgecolor='k', alpha=0.85)
@@ -782,7 +817,8 @@ def main():
                       f"NSE={metrics['depth_nse']:.4f}  "
                       f"RMSE={metrics['depth_rmse']:.4f}  "
                       f"RRMSE={metrics['rrmse']:.4f}  "
-                      f"CSI={metrics['depth_csi']:.3f}")
+                      f"CSI={metrics['depth_csi']:.3f}  "
+                      f"MB%={metrics['mass_balance_pct']:.2f}")
             
             except Exception as e:
                 print(f"  ❌ {model_name} failed: {e}")
@@ -813,21 +849,22 @@ def main():
             continue
         
         agg = {}
-        for key in ['rmse', 'rrmse', 'depth_rmse', 'depth_nse', 'depth_csi']:
+        for key in ['rmse', 'rrmse', 'depth_rmse', 'depth_nse', 'depth_csi', 'mass_balance_pct']:
             vals = [m[key] for m in sim_metrics if not np.isnan(m.get(key, np.nan))]
             agg[key] = float(np.mean(vals)) if vals else np.nan
         
         agg_metrics[model_name] = agg
     
     # Print comparison table
-    print(f"\n{'Model':<18s} {'NSE':>8s} {'RMSE':>10s} {'RRMSE':>8s} {'CSI':>8s}")
-    print("─" * 56)
+    print(f"\n{'Model':<18s} {'NSE':>8s} {'RMSE':>10s} {'RRMSE':>8s} {'CSI':>8s} {'MB%':>8s}")
+    print("─" * 64)
     for model_name, agg in agg_metrics.items():
         label = MODEL_LABELS.get(model_name, model_name)
         print(f"{label:<18s} {agg.get('depth_nse', 0):>8.4f} "
               f"{agg.get('depth_rmse', 0):>10.4f} "
               f"{agg.get('rrmse', 0):>8.4f} "
-              f"{agg.get('depth_csi', 0):>8.3f}")
+              f"{agg.get('depth_csi', 0):>8.3f} "
+              f"{agg.get('mass_balance_pct', np.nan):>8.2f}")
     
     # Plots
     if len(agg_metrics) > 1:
@@ -836,30 +873,80 @@ def main():
     
     # ---- Segment table ----
     if segments:
-        print(f"\n{'=' * 70}")
-        print("PER-SEGMENT DEPTH NSE (All Nodes)")
-        print(f"{'=' * 70}")
         seg_keys = segments
-        header = f"{'Model':<18s}" + "".join(f"{'t' + s:>12s}" for s in seg_keys)
-        print(header)
-        print("─" * len(header))
         
-        for model_name in models:
-            label = MODEL_LABELS.get(model_name, model_name)
-            row = f"{label:<18s}"
-            sim_results = list(per_sim_results[model_name].values())
-            for seg_str in seg_keys:
-                parts = seg_str.split(':')
-                key = f"t{parts[0]}-{parts[1]}"
-                nses = []
-                for sr in sim_results:
-                    if 'segments' in sr and 'All_Nodes' in sr['segments']:
-                        seg = sr['segments']['All_Nodes'].get(key, {})
-                        if 'NSE' in seg:
-                            nses.append(seg['NSE'])
-                mean_nse = np.mean(nses) if nses else np.nan
-                row += f"{mean_nse:>12.4f}"
-            print(row)
+        for metric_name in ['NSE', 'RMSE', 'CSI']:
+            print(f"\n{'=' * 70}")
+            print(f"PER-SEGMENT DEPTH {metric_name} (All Nodes)")
+            print(f"{'=' * 70}")
+            header = f"{'Model':<18s}" + "".join(f"{'t' + s:>12s}" for s in seg_keys) + f"{'Overall':>12s}"
+            print(header)
+            print("─" * len(header))
+            
+            for model_name in models:
+                label = MODEL_LABELS.get(model_name, model_name)
+                row = f"{label:<18s}"
+                sim_results = list(per_sim_results[model_name].values())
+                
+                for seg_str in seg_keys:
+                    parts = seg_str.split(':')
+                    key = f"t{parts[0]}-{parts[1]}"
+                    vals = []
+                    for sr in sim_results:
+                        if 'segments' in sr and 'All_Nodes' in sr['segments']:
+                            seg = sr['segments']['All_Nodes'].get(key, {})
+                            if metric_name in seg:
+                                vals.append(seg[metric_name])
+                    mean_val = np.mean(vals) if vals else np.nan
+                    if np.isnan(mean_val):
+                        row += f"{'—':>12s}"
+                    else:
+                        row += f"{mean_val:>12.4f}"
+                
+                # Overall
+                overall_key = {'NSE': 'depth_nse', 'RMSE': 'depth_rmse', 'CSI': 'depth_csi'}
+                overall_vals = [m.get(overall_key[metric_name], np.nan)
+                               for m in sim_results
+                               if not np.isnan(m.get(overall_key[metric_name], np.nan))]
+                overall_mean = np.mean(overall_vals) if overall_vals else np.nan
+                row += f"{overall_mean:>12.4f}"
+                print(row)
+        
+        # Important nodes only (if available)
+        has_important = any(
+            'segments' in sr and 'Important' in sr.get('segments', {})
+            for model_name in models
+            for sr in per_sim_results[model_name].values()
+        )
+        if has_important:
+            for metric_name in ['NSE', 'RMSE', 'CSI']:
+                print(f"\n{'=' * 70}")
+                print(f"PER-SEGMENT DEPTH {metric_name} (Important Nodes Only)")
+                print(f"{'=' * 70}")
+                header = f"{'Model':<18s}" + "".join(f"{'t' + s:>12s}" for s in seg_keys)
+                print(header)
+                print("─" * len(header))
+                
+                for model_name in models:
+                    label = MODEL_LABELS.get(model_name, model_name)
+                    row = f"{label:<18s}"
+                    sim_results = list(per_sim_results[model_name].values())
+                    
+                    for seg_str in seg_keys:
+                        parts = seg_str.split(':')
+                        key = f"t{parts[0]}-{parts[1]}"
+                        vals = []
+                        for sr in sim_results:
+                            if 'segments' in sr and 'Important' in sr['segments']:
+                                seg = sr['segments']['Important'].get(key, {})
+                                if metric_name in seg:
+                                    vals.append(seg[metric_name])
+                        mean_val = np.mean(vals) if vals else np.nan
+                        if np.isnan(mean_val):
+                            row += f"{'—':>12s}"
+                        else:
+                            row += f"{mean_val:>12.4f}"
+                    print(row)
     
     # Save JSON
     summary = {

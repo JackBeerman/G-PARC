@@ -26,7 +26,7 @@ TEST_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDo
 OUTPUT_DIR="/scratch/jtb3sud/shocktube_comparison"
 
 # ============================================================
-# CHECKPOINTS — update these paths
+# CHECKPOINTS
 # ============================================================
 GPARCV1_CKPT="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/shock_tube_20250927_104720_run_mod10_750/shock_tube_best_model.pth"
 GPARCV2_CKPT="/scratch/jtb3sud/shocktube_v2_training/best_model.pth"
@@ -38,7 +38,7 @@ MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/shocktube/run1/best_model.pt"
 # ============================================================
 ROLLOUT_STEPS=40
 NUM_VIZ=5
-MAX_SIMS=20  # Uncomment to limit
+MAX_SIMS=20
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -83,18 +83,14 @@ echo "Output:        $OUTPUT_DIR"
 echo "Rollout steps: $ROLLOUT_STEPS"
 echo "================================================================"
 
-CMD="scripts/shockchord/eval_comparison.py \
-    --test_dir \"$TEST_DIR\" \
-    --output_dir $OUTPUT_DIR \
+apptainer run --nv "$CONTAINER" eval_comparison.py \
+    --test_dir "$TEST_DIR" \
+    --output_dir "$OUTPUT_DIR" \
     --models $MODELS \
-    --rollout_steps $ROLLOUT_STEPS \
-    --num_viz $NUM_VIZ \
-    --device cuda"
-
-# Uncomment to limit simulations
-# CMD="$CMD --max_sims $MAX_SIMS"
-
-apptainer run --nv "$CONTAINER" bash -c "cd /home/claude/G-PARC && python $CMD"
+    --rollout_steps "$ROLLOUT_STEPS" \
+    --num_viz "$NUM_VIZ" \
+    --max_sims "$MAX_SIMS" \
+    --device cuda
 
 EXIT_CODE=$?
 
