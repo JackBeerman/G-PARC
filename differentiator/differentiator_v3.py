@@ -140,13 +140,22 @@ class ElastoPlasticDifferentiatorV3(ElastoPlasticDifferentiator):
         super().initialize_weights(sample_data)
         
         # Build edge→element mapping for erosion masking
+        # Rebuild if mesh changes (different edge count or element count)
         if hasattr(sample_data, 'elements') and sample_data.elements is not None:
-            if not self.edge_erosion_cache.initialized:
+            needs_rebuild = not self.edge_erosion_cache.initialized
+            if self.edge_erosion_cache.initialized:
+                curr_edges = sample_data.edge_index.shape[1]
+                if curr_edges != self.edge_erosion_cache._num_edges:
+                    needs_rebuild = True
+            
+            if needs_rebuild:
                 print("  Building edge→element mapping for erosion-aware MLS...")
                 self.edge_erosion_cache.initialize(
                     sample_data.edge_index, sample_data.elements
                 )
-                print(f"  ✓ Edge erosion cache ready")
+                print(f"  ✓ Edge erosion cache ready "
+                      f"({self.edge_erosion_cache._num_edges} edges, "
+                      f"{sample_data.elements.shape[0]} elements)")
     
     def forward(self, full_state, edge_index, erosion_node_mask=None, 
                 erosion_elem=None):

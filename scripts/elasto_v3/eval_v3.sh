@@ -41,7 +41,7 @@ echo "Checkpoint:  $CHECKPOINT"
 echo "Output:      $OUTPUT_DIR"
 echo "================================================================"
 
-CMD="scripts/elasto_v3/eval.py \
+CMD="eval.py \
     --test_dir $TEST_DIR \
     --checkpoint $CHECKPOINT \
     --output_dir $OUTPUT_DIR \

@@ -186,9 +186,26 @@ class EdgeErosionCache:
         if not self._initialized:
             raise RuntimeError("EdgeErosionCache not initialized. Call initialize() first.")
         
+        # Ensure cached mappings are on the same device as input
+        
+        device = erosion_elem.device
+        edge_elem_indices = self._edge_elem_indices.to(device)
+        edge_elem_ptr = self._edge_elem_ptr.to(device)
+        
+        # Bounds check: element indices must be < len(erosion_elem)
+        M = erosion_elem.shape[0]
+        if len(edge_elem_indices) > 0:
+            max_idx = edge_elem_indices.max().item()
+            if max_idx >= M:
+                raise RuntimeError(
+                    f"EdgeErosionCache: element index {max_idx} >= erosion_elem size {M}. "
+                    f"Cache was built for a mesh with {max_idx + 1}+ elements but current "
+                    f"data has only {M} elements. Cache needs rebuilding."
+                )
+        
         return compute_edge_erosion_weights_fast(
-            self._edge_elem_indices,
-            self._edge_elem_ptr,
+            edge_elem_indices,
+            edge_elem_ptr,
             erosion_elem,
             self._num_edges
         )

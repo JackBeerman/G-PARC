@@ -4,8 +4,7 @@
 #SBATCH -o v3_elasto.out
 #SBATCH -e v3_elasto.err
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1
-#SBATCH --constraint=a100_80gb
+#SBATCH --gres=gpu
 #SBATCH -t 72:00:00
 #SBATCH -c 4
 #SBATCH --mem=80G
@@ -93,7 +92,7 @@ echo "Erosion LR: $EROSION_LR"
 echo "Focal:      alpha=$FOCAL_ALPHA gamma=$FOCAL_GAMMA"
 echo "================================================================"
 
-apptainer run --nv "$CONTAINER" scripts/elasto_v3/train.py \
+apptainer run --nv "$CONTAINER" train_v3.py \
     --train_dir "$TRAIN_DIR" \
     --val_dir "$VAL_DIR" \
     --output_dir "$OUTPUT_DIR" \

@@ -218,6 +218,16 @@ class GPARC_ElastoPlastic_V3(nn.Module):
             
             # ---- Initialize erosion state ----
             if i == 0:
+                # Rebuild edge→element cache if mesh changed
+                if hasattr(data, 'elements') and data.elements is not None:
+                    cache = self.derivative_solver.edge_erosion_cache
+                    needs_rebuild = (not cache.initialized or 
+                                    getattr(cache, '_num_elements', None) != num_elements)
+                    if needs_rebuild:
+                        cache.clear()
+                        cache.initialize(edge_index, elements)
+                        cache._num_elements = num_elements
+                
                 # First step: use GT erosion if available
                 if hasattr(data, 'x_element') and data.x_element is not None:
                     erosion_elem = data.x_element.flatten()  # 1=valid, 0=eroded
