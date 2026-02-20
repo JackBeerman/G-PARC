@@ -223,7 +223,7 @@ def load_model_gparcv2(checkpoint_path, device, sf=9, df=4):
     feat_out = config.get('feature_out_channels', 128)
     
     gradient_solver = SolveGradientsLST()
-    laplacian_solver = SolveWeightLST2d()
+    laplacian_solver = SolveWeightLST2d(use_2hop_extension=False)
     
     feature_extractor = GraphConvFeatureExtractorV2(
         in_channels=sf,
