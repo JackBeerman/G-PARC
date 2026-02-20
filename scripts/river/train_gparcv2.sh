@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J gparc_river_v2_seq20
-#SBATCH -o gparc_river_v2_seq20.out
-#SBATCH -e gparc_river_v2_seq20.err
+#SBATCH -J gparc_river_v2_150
+#SBATCH -o gparc_river_v2_150.out
+#SBATCH -e gparc_river_v2_150.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
-#SBATCH -t 48:00:00
+#SBATCH -t 72:00:00
 #SBATCH -c 8
 #SBATCH --mem=120G
 
@@ -29,19 +29,19 @@ export MKL_NUM_THREADS=1
 BASE_DATA="/standard/sds_baek_energetic/HEC_RAS (River)"
 TRAIN_DIR="${BASE_DATA}/pt_train_normalized"
 VAL_DIR="${BASE_DATA}/pt_val_normalized"
-OUTPUT_DIR="/scratch/jtb3sud/river_v2_training_scheduled/river_v2_training_seq20"
+OUTPUT_DIR="/scratch/jtb3sud/gparcv2/river/run1_0_150"
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # Resume from best seq_len=1 checkpoint
-RESUME_CKPT="/scratch/jtb3sud/river_v2_training_scheduled/best_model.pth"
+#RESUME_CKPT="/scratch/jtb3sud/river_v2_training_scheduled/best_model.pth"
 
 # ============================================================
 # TRAINING HYPERPARAMETERS
 # ============================================================
-NUM_EPOCHS=50
-SEQ_LEN=20              # Up from 1 -> 20
-STRIDE=5                # Larger stride for diverse windows
-LR=5e-5                 # Reduced for fine-tuning
+NUM_EPOCHS=150
+SEQ_LEN=1              # Up from 1 -> 20
+STRIDE=1                # Larger stride for diverse windows
+LR=1e-4                 # Reduced for fine-tuning
 GRAD_CLIP_NORM=1.0
 NUM_WORKERS=4
 
@@ -89,7 +89,6 @@ apptainer run --nv "$CONTAINER" train_gparcv2.py \
     --train_dir "$TRAIN_DIR" \
     --val_dir "$VAL_DIR" \
     --output_dir "$OUTPUT_DIR" \
-    --resume "$RESUME_CKPT" \
     --epochs "$NUM_EPOCHS" \
     --seq_len "$SEQ_LEN" \
     --stride "$STRIDE" \

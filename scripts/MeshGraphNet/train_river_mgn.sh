@@ -33,7 +33,7 @@ export MKL_NUM_THREADS=1
 # ============================================================
 TRAIN_DIR="/scratch/jtb3sud/combined/train/normalized"
 VAL_DIR="/scratch/jtb3sud/combined/val/normalized"
-OUTPUT_DIR="/scratch/jtb3sud/meshgraphnet/river/run1"
+OUTPUT_DIR="/scratch/jtb3sud/meshgraphnet/river/run2_51_150"
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 mkdir -p "$OUTPUT_DIR"
@@ -41,7 +41,7 @@ mkdir -p "$OUTPUT_DIR"
 # ============================================================
 # HYPERPARAMETERS (standardized)
 # ============================================================
-NUM_EPOCHS=50          # Match MeshGraphKAN river
+NUM_EPOCHS=150          # Match MeshGraphKAN river
 SEQ_LEN=1              # Match MeshGraphKAN / G-PARCv2 river
 STRIDE=1               # Match MeshGraphKAN river
 LR=1e-4                 # NVIDIA canonical MGN LR
@@ -106,6 +106,8 @@ apptainer run --nv "$CONTAINER" train_river.py \
     --hidden_dim "$HIDDEN_DIM" \
     --num_layers "$NUM_LAYERS" \
     --epochs "$NUM_EPOCHS" \
+    --resume "/scratch/jtb3sud/meshgraphnet/river/run1/best_model.pt" \
+    --fresh_scheduler \
     --lr "$LR" \
     --weight_decay "$WEIGHT_DECAY" \
     --grad_clip_norm "$GRAD_CLIP" \
