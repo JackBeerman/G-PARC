@@ -16,6 +16,7 @@ class ElastoPlasticDataset(IterableDataset):
     Updated:
     - Injects 'mesh_id' into Data objects for Operator Caching.
     - Handles Multi-Processing correctly.
+    - preload=True caches all sims in memory (recommended for small datasets).
     """
     
     def __init__(self,
@@ -26,7 +27,8 @@ class ElastoPlasticDataset(IterableDataset):
                  num_static_feats: int = 2,
                  num_dynamic_feats: int = 2,
                  file_pattern: str = "*.pt",
-                 use_element_features: bool = False):
+                 use_element_features: bool = False,
+                 preload: bool = True):
         super().__init__()
         self.directory = Path(directory)
         self.seq_len = seq_len
@@ -35,6 +37,8 @@ class ElastoPlasticDataset(IterableDataset):
         self.num_static_feats = num_static_feats
         self.num_dynamic_feats = num_dynamic_feats
         self.use_element_features = use_element_features
+        self.preload = preload
+        self._cache = {}
         
         if simulation_ids is None:
             self.simulation_ids = self._discover_simulation_ids()
@@ -50,6 +54,30 @@ class ElastoPlasticDataset(IterableDataset):
         print(f"  Sequence length: {seq_len}")
         print(f"  Stride: {stride}")
         print(f"  Found {len(self.simulation_ids)} simulation files")
+        
+        if self.preload:
+            self._preload_all()
+    
+    def _preload_all(self):
+        """Load all simulations into memory once."""
+        print(f"  Preloading {len(self.simulation_ids)} simulations into memory...")
+        loaded = 0
+        for sim_name in tqdm(self.simulation_ids, desc="  Preloading"):
+            dataset_file = self.directory / f"{sim_name}.pt"
+            try:
+                sim_data = torch.load(dataset_file, weights_only=False)
+                if isinstance(sim_data, list) and len(sim_data) > 0:
+                    # Inject mesh_id once during preload
+                    first_snapshot = sim_data[0]
+                    mesh_signature = (first_snapshot.num_nodes, first_snapshot.num_edges)
+                    mesh_id_int = abs(hash(mesh_signature)) % 1000000
+                    for data in sim_data:
+                        data.mesh_id = torch.tensor([mesh_id_int], dtype=torch.long)
+                    self._cache[sim_name] = sim_data
+                    loaded += 1
+            except Exception as e:
+                print(f"  Error preloading {dataset_file}: {e}")
+        print(f"  ✓ Preloaded {loaded} simulations")
     
     def _discover_simulation_ids(self) -> List[str]:
         files = list(self.directory.glob(self.file_pattern))
@@ -80,22 +108,23 @@ class ElastoPlasticDataset(IterableDataset):
     
         # --- 2. ITERATION LOOP ---
         for sim_name in files_to_process:
-            dataset_file = self.directory / f"{sim_name}.pt"
-            
             try:
-                sim_data = torch.load(dataset_file, weights_only=False)
-                
-                if not isinstance(sim_data, list):
-                    continue
-                
-                # --- INJECT MESH ID BASED ON TOPOLOGY ---
-                # Same mesh topology = same mesh_id (for operator caching)
-                first_snapshot = sim_data[0]
-                mesh_signature = (first_snapshot.num_nodes, first_snapshot.num_edges)
-                mesh_id_int = abs(hash(mesh_signature)) % 1000000
-                
-                for data in sim_data:
-                    data.mesh_id = torch.tensor([mesh_id_int], dtype=torch.long)
+                # Load from cache or disk
+                if self.preload and sim_name in self._cache:
+                    sim_data = self._cache[sim_name]
+                else:
+                    dataset_file = self.directory / f"{sim_name}.pt"
+                    sim_data = torch.load(dataset_file, weights_only=False)
+                    
+                    if not isinstance(sim_data, list):
+                        continue
+                    
+                    # Inject mesh_id (only needed if not preloaded)
+                    first_snapshot = sim_data[0]
+                    mesh_signature = (first_snapshot.num_nodes, first_snapshot.num_edges)
+                    mesh_id_int = abs(hash(mesh_signature)) % 1000000
+                    for data in sim_data:
+                        data.mesh_id = torch.tensor([mesh_id_int], dtype=torch.long)
     
                 T = len(sim_data)
                 max_start = T - self.seq_len
@@ -119,7 +148,7 @@ class ElastoPlasticDataset(IterableDataset):
                         yield window
             
             except Exception as e:
-                print(f"Error loading {dataset_file}: {e}")
+                print(f"Error loading {sim_name}: {e}")
                 continue
 
 

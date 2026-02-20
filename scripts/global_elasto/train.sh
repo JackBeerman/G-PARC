@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J gparc_erosion
-#SBATCH -o gparc_erosion.out
-#SBATCH -e gparc_erosion.err
+#SBATCH -J gparc_erosion75
+#SBATCH -o gparc_erosion75.out
+#SBATCH -e gparc_erosion75.err
 #SBATCH -p gpu
-#SBATCH --gres=gpu
+#SBATCH --gres=gpu:a100
 #SBATCH -t 24:10:00
 #SBATCH -c 8
 #SBATCH --mem=80G
@@ -32,7 +32,7 @@ export MKL_NUM_THREADS=1
 # ============================================================
 TRAIN_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/train"
 VAL_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/val"
-OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/erosion"
+OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/erosion75focal"
 
 # Resume from best displacement-only model
 RESUME_FROM="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
@@ -44,7 +44,7 @@ CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 # ============================================================
 NUM_EPOCHS=500
 SEQ_LEN=16
-STRIDE=16
+STRIDE=8
 LR=3e-4                  # Displacement model LR (same as 2hop)
 EROSION_LR=1e-3           # Erosion head LR (higher — training from scratch)
 EROSION_WEIGHT=1.0        # Focal loss weight relative to MSE
@@ -52,7 +52,7 @@ NUM_WORKERS=4
 GRAD_CLIP_NORM=2.0
 
 # Focal loss
-FOCAL_ALPHA=0.25
+FOCAL_ALPHA=0.75
 FOCAL_GAMMA=2.0
 
 # Erosion head architecture
