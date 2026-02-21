@@ -34,6 +34,7 @@ from scripts.shockchord.eval_comparison import (
     NUM_STATIC, NUM_USED_DYNAMIC, SKIP_INDICES, RAW_DYNAMIC, KEEP_INDICES,
     VAR_NAMES, MODEL_LABELS, LOADERS, ROLLOUT_FNS,
     extract_dynamic, apply_skip, extract_global_params,
+    extract_global_params_from_data,
 )
 
 VAR_LABELS = {
@@ -41,6 +42,23 @@ VAR_LABELS = {
     'x_momentum':   r'$\rho u$',
     'total_energy':  r'$E$',
 }
+
+
+# ---------------------------------------------------------------------------
+# TIME FORMATTING
+# ---------------------------------------------------------------------------
+
+def format_physical_time(step, delta_t):
+    """Convert a timestep index to a physical time string using the sim's delta_t."""
+    if delta_t is None:
+        return f't = {step}'
+    phys_time = step * delta_t
+    if phys_time < 1e-4:
+        return f't = {phys_time:.2e} s'
+    elif phys_time < 1.0:
+        return f't = {phys_time:.4f} s'
+    else:
+        return f't = {phys_time:.2f} s'
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +98,7 @@ def parse_model_specs(raw_specs):
 
 def make_field_figure(gt_list, model_preds, model_order, timesteps,
                       var_idx, var_name, output_path,
-                      sim_name='', dpi=300, cmap='RdBu_r'):
+                      sim_name='', dpi=300, cmap='RdBu_r', delta_t=None):
     """
     One figure for a single field variable.
 
@@ -147,9 +165,10 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
                 ax.set_ylabel(row_labels[row], fontsize=9, fontweight='bold',
                               rotation=90, labelpad=8)
 
-            # Column header on first row
+            # Column header on first row — physical time
             if row == 0:
-                ax.set_title(f't = {t}', fontsize=10, fontweight='bold', pad=6)
+                ax.set_title(format_physical_time(t, delta_t),
+                             fontsize=10, fontweight='bold', pad=6)
 
     # Colorbar — full height on right
     cb_x = x0 + n_times * cw + 0.01
@@ -179,7 +198,7 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
 
 def make_error_figure(gt_list, model_preds, model_order, timesteps,
                       var_idx, var_name, output_path,
-                      sim_name='', dpi=300):
+                      sim_name='', dpi=300, delta_t=None):
     """Absolute error figure for one variable. No GT row."""
     n_times = len(timesteps)
     n_rows = len(model_order)
@@ -236,7 +255,8 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
                 ax.set_ylabel(label, fontsize=9, fontweight='bold',
                               rotation=90, labelpad=8)
             if row == 0:
-                ax.set_title(f't = {t}', fontsize=10, fontweight='bold', pad=6)
+                ax.set_title(format_physical_time(t, delta_t),
+                             fontsize=10, fontweight='bold', pad=6)
 
     # Colorbar
     var_label = VAR_LABELS.get(var_name, var_name)
@@ -309,6 +329,15 @@ def main():
     gs_dim = int(np.sqrt(n_nodes))
     print(f"  {len(sim)} timesteps, {n_nodes} nodes ({gs_dim}×{gs_dim}), rollout {steps} steps")
 
+    # Extract delta_t from this simulation's global parameters
+    sim_params = extract_global_params_from_data(sample_data)
+    delta_t = sim_params.get('delta_t', None)
+    if delta_t is not None and delta_t != 0:
+        print(f"  Δt = {delta_t} s")
+    else:
+        delta_t = None
+        print(f"  Δt not found — column headers will show step indices")
+
     # Ground truth
     gt_list = []
     for t in range(steps):
@@ -322,7 +351,12 @@ def main():
         timesteps = [t for t in args.timesteps if t < steps]
     else:
         timesteps = [steps // 6, steps // 2, steps - 1]
-    print(f"  Timesteps: {timesteps}")
+
+    if delta_t is not None:
+        phys_times = [format_physical_time(t, delta_t) for t in timesteps]
+        print(f"  Timesteps: {timesteps} (physical: {phys_times})")
+    else:
+        print(f"  Timesteps: {timesteps}")
 
     # Load models & rollout
     model_preds = {}
@@ -359,14 +393,16 @@ def main():
             fpath = output_dir / f'{vn}_{sim_name}.{ext}'
             make_field_figure(gt_list, model_preds, model_order, timesteps,
                               vi, vn, fpath,
-                              sim_name=sim_name, dpi=args.dpi, cmap=args.cmap)
+                              sim_name=sim_name, dpi=args.dpi, cmap=args.cmap,
+                              delta_t=delta_t)
 
         if args.error_fig:
             for ext in ['png', 'pdf']:
                 epath = output_dir / f'{vn}_error_{sim_name}.{ext}'
                 make_error_figure(gt_list, model_preds, model_order, timesteps,
                                   vi, vn, epath,
-                                  sim_name=sim_name, dpi=args.dpi)
+                                  sim_name=sim_name, dpi=args.dpi,
+                                  delta_t=delta_t)
 
     print(f"\n✓ Done! {len(VAR_NAMES)} field figures + {'error figures ' if args.error_fig else ''}in {output_dir}")
 

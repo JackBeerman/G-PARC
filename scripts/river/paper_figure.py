@@ -59,7 +59,29 @@ VAR_LABELS = {
 }
 
 # Publication-friendly colormaps
-PAPER_CMAPS = ['cividis', 'viridis', 'coolwarm', 'coolwarm']
+#   Depth:  viridis  — perceptually uniform, prints well
+#   Volume: viridis  — same scale for consistency
+#   Vel_X:  RdBu_r   — diverging for signed velocity
+#   Vel_Y:  RdBu_r   — diverging for signed velocity
+PAPER_CMAPS = ['viridis', 'viridis', 'RdBu_r', 'RdBu_r']
+
+# Physical time per timestep (minutes)
+DT_MINUTES = 20
+
+
+# ===========================================================================
+# TIME FORMATTING
+# ===========================================================================
+
+def format_physical_time(step, dt_minutes=DT_MINUTES):
+    """Convert a timestep index to a physical time string."""
+    total_min = step * dt_minutes
+    if total_min >= 60:
+        hours = total_min / 60
+        if hours == int(hours):
+            return f'{int(hours)} hr'
+        return f'{hours:.1f} hr'
+    return f'{total_min} min'
 
 
 # ===========================================================================
@@ -117,7 +139,7 @@ def render_on_ax(ax, values, pos, polys, cmap_name, norm, bg_color='#f5f5f5'):
         cmap_obj = plt.colormaps.get_cmap(cmap_name)
         colors = cmap_obj(norm(values[:n_cells]))
         pc = PolyCollection(polys[:n_cells], facecolors=colors,
-                            edgecolors='none', linewidths=0)
+                            edgecolors='face', linewidths=0.1)
         ax.add_collection(pc)
         ax.autoscale_view()
     else:
@@ -225,7 +247,8 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
 
             # Column header on first row
             if row == 0:
-                ax.set_title(f't = {t}', fontsize=10, fontweight='bold', pad=4)
+                time_str = format_physical_time(t)
+                ax.set_title(f't = {time_str}', fontsize=10, fontweight='bold', pad=4)
 
     # Colorbar
     cb_x = x0 + n_times * cw + 0.005
@@ -325,7 +348,8 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
                         transform=ax.transAxes, fontsize=8, fontweight='bold',
                         ha='right', va='center', rotation=90)
             if row == 0:
-                ax.set_title(f't = {t}', fontsize=10, fontweight='bold', pad=4)
+                time_str = format_physical_time(t)
+                ax.set_title(f't = {time_str}', fontsize=10, fontweight='bold', pad=4)
 
     # Colorbar
     cb_x = x0 + n_times * cw + 0.005
@@ -370,11 +394,17 @@ def main():
                         help="Specific timesteps (default: 3 evenly spaced)")
     parser.add_argument("--variables", type=int, nargs='+', default=None,
                         help="Variable indices to plot (default: all). 0=Depth, 1=Volume, 2=Vel_X, 3=Vel_Y")
+    parser.add_argument("--dt_minutes", type=float, default=20,
+                        help="Physical time per timestep in minutes (default: 20)")
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--error_fig", action='store_true',
                         help="Also generate absolute-error figures")
     args = parser.parse_args()
+
+    # Update global dt if overridden
+    global DT_MINUTES
+    DT_MINUTES = args.dt_minutes
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -454,7 +484,7 @@ def main():
         else:
             # 3 evenly spaced through available range
             timesteps = [steps // 6, steps // 2, steps - 1]
-        print(f"  Timesteps: {timesteps} (of {steps} available)")
+        print(f"  Timesteps: {timesteps} (physical: {[format_physical_time(t) for t in timesteps]})")
 
         # Load models & rollout
         model_preds = {}

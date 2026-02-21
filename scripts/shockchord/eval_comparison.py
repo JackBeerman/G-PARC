@@ -340,7 +340,7 @@ def load_model_gparcv2(ckpt_path, sample_data, device):
     pos_std = pos_stats.get('std')
 
     gradient_solver = SolveGradientsLST(pos_mean=pos_mean, pos_std=pos_std)
-    laplacian_solver = SolveWeightLST2d(pos_mean=pos_mean, pos_std=pos_std, min_neighbors=5)
+    laplacian_solver = SolveWeightLST2d(pos_mean=pos_mean, pos_std=pos_std, use_2hop_extension=False)
 
     feature_extractor = GraphConvFeatureExtractorV2(
         in_channels=sf, hidden_channels=hidden, out_channels=feat_out,

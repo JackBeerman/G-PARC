@@ -182,10 +182,10 @@ class GPARC_ShockTube_V2(nn.Module):
         global_attrs = self._extract_global_attrs(first_data)  # [3] raw
         global_embed = self.global_processor(global_attrs)      # [64] processed
         
-        # dt=1.0: The network learns the full per-step update via FiLM
-        # conditioning on normalized delta_t. No explicit dt multiplication
-        # needed — this matches v1's approach where the learned integrator
-        # absorbed dt implicitly, which gave best performance.
+        # dt=1.0: Data is min-max [0,1] normalized, so the network learns the
+        # full per-step update. The normalized delta_t is provided to FiLM
+        # conditioning so the network can adapt to different timestep sizes.
+        # Physical dt is NOT used for Euler — V1 also uses dt=1.0.
         if dt is None:
             dt = 1.0
         
@@ -249,7 +249,7 @@ class GPARC_ShockTube_V2(nn.Module):
         global_attrs = self._extract_global_attrs(simulation[0]).to(device)
         global_embed = self.global_processor(global_attrs)
         
-        # dt=1.0: FiLM conditioning handles timestep variation
+        # dt=1.0: normalized data, network learns full update via FiLM
         if dt is None:
             dt = 1.0
         

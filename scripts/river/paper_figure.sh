@@ -32,7 +32,9 @@ OUTPUT_DIR="/scratch/jtb3sud/river_comparison/paper_figures"
 # ============================================================
 GPARCV1_CKPT="/home/jtb3sud/G-PARC/weights/new_river/modelseq20_ep250.pth"
 GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/river/run1_0_150/best_model.pth"
-MGKAN_CKPT="/scratch/jtb3sud/delta/river/best_model.pth"
+MGKAN_CKPT="/scratch/jtb3sud/delta/river/run2_51_150/best_model.pth"
+#
+#/scratch/jtb3sud/delta/river/best_model.pth
 MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/river/run1/best_model.pt"
 
 # ============================================================

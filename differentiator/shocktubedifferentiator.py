@@ -132,6 +132,13 @@ class ShockTubeDifferentiator(nn.Module):
             else:
                 self.list_dif.append(None)
 
+        # --- Physics feature normalization ---
+        # MLS advection and FD diffusion on [0,1]-normalized data produce
+        # values of O(5-20). SPADE's GCNConv mask branch amplifies these
+        # further. LayerNorm brings physics features to O(1) scale,
+        # matching the learned features and stabilizing training.
+        self.list_phys_norm = nn.ModuleList()
+        
         # --- MappingAndRecon (SPADE) per variable ---
         self.list_mar = nn.ModuleList()
         for i in range(num_dynamic_feats):
@@ -140,6 +147,7 @@ class ShockTubeDifferentiator(nn.Module):
             if self.list_dif[i] is not None: n_explicit += 1
             
             if n_explicit > 0:
+                self.list_phys_norm.append(nn.LayerNorm(n_explicit))
                 self.list_mar.append(MappingAndRecon(
                     n_base_features=n_fe_features,
                     n_mask_channel=n_explicit,
@@ -151,15 +159,20 @@ class ShockTubeDifferentiator(nn.Module):
                     zero_init=zero_init,
                 ))
             else:
+                self.list_phys_norm.append(None)
                 self.list_mar.append(None)
         
         # --- FiLM: Condition learned features on raw global params ---
-        # SimulationConditionedLayerNorm: LayerNorm + gamma/beta from [pressure, density, dt]
-        # NOTE: Only learned features are FiLM'd, NOT the dynamic state.
-        # Physics operators (advection, diffusion) need raw dynamic features
-        # to preserve physical meaning (e.g., velocity = momentum/density).
         self.feature_norm = SimulationConditionedLayerNorm(
             normalized_shape=n_fe_features,
+            global_dim=global_param_dim,
+        )
+        
+        # --- FiLM on dynamic state (matching V1's derivative_norm) ---
+        # Normalizes dynamic features conditioned on simulation params before
+        # they enter the physics operators. This was critical for V1's stability.
+        self.derivative_norm = SimulationConditionedLayerNorm(
+            normalized_shape=num_dynamic_feats,
             global_dim=global_param_dim,
         )
         
@@ -217,24 +230,30 @@ class ShockTubeDifferentiator(nn.Module):
         global_attrs = raw_global[0]  # [3] — same for all nodes
         
         # --- 1. Learned Features + FiLM ---
-        # FiLM conditions the learned representation, NOT the physics
         learned_features = self.feature_extractor(
             static_feats, edge_index, pos=static_feats
         )
         learned_features = self.feature_norm(learned_features, global_attrs)
         
-        # --- 2. Build mesh_data for MLS ---
+        # --- 2. FiLM on dynamic state (matching V1's derivative_norm) ---
+        # Conditions dynamic features on simulation params for stability
+        # across different pressure/density/dt regimes.
+        # Physics operators STILL use raw dynamic_feats for velocity computation,
+        # but the conditioned version informs the SPADE fusion.
+        dynamic_conditioned = self.derivative_norm(dynamic_feats, global_attrs)
+        
+        # --- 3. Build mesh_data for MLS ---
         mesh_data = Data(pos=static_feats, edge_index=edge_index)
         mesh_data.num_nodes = state.shape[0]
         
-        # --- 3. Velocity from RAW dynamic features (physical meaning preserved) ---
+        # --- 4. Velocity from RAW dynamic features (physical meaning preserved) ---
         density_raw = dynamic_feats[:, 0:1]
         x_mom_raw = dynamic_feats[:, self.velocity_indices[0]:self.velocity_indices[0] + 1]
         safe_density = torch.clamp(density_raw.abs(), min=1e-6)
         v_x = x_mom_raw / safe_density
         velocity = torch.cat([v_x, torch.zeros_like(v_x)], dim=1)  # [N, 2]
         
-        # --- 4. Physics (on RAW dynamic) + SPADE per variable ---
+        # --- 5. Physics (on RAW dynamic) + SPADE per variable ---
         t_dot_parts = []
         
         for i in range(self.num_dynamic_feats):
@@ -243,7 +262,7 @@ class ShockTubeDifferentiator(nn.Module):
             if mar_block is not None:
                 phys_feats = []
                 
-                # Advection and diffusion operate on RAW dynamic features
+                # Advection and diffusion on RAW dynamic (preserves physics)
                 if self.list_adv[i] is not None:
                     adv = self.list_adv[i](dynamic_feats[:, i:i+1], velocity, mesh_data)
                     phys_feats.append(adv)
@@ -252,10 +271,14 @@ class ShockTubeDifferentiator(nn.Module):
                     dif = self.list_dif[i](dynamic_feats[:, i:i+1], mesh_data)
                     phys_feats.append(dif)
                 
-                # SPADE fuses FiLM'd learned features with raw physics features
+                # Normalize physics features to O(1) before SPADE
+                phys_cat = torch.cat(phys_feats, dim=1)
+                phys_cat = self.list_phys_norm[i](phys_cat)
+                
+                # SPADE fuses FiLM'd learned features with normalized physics
                 out = mar_block(
                     learned_features,
-                    torch.cat(phys_feats, dim=1),
+                    phys_cat,
                     edge_index,
                 )
                 t_dot_parts.append(out)
