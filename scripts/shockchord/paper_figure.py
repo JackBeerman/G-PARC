@@ -9,16 +9,17 @@ Each figure:
     Rows:    GT | G-PARCv1 | G-PARCv2 | MeshGraphKAN | MeshGraphNet
 
 Color range is set from GROUND TRUTH only (global min/max across timesteps).
+Each row gets its own colorbar.
 
 Usage:
-    python paper_figure.py \\
-        --test_dir /path/to/test_cases_normalized \\
-        --models gparcv1:/path gparcv2:/path mgkan:/path mgnet:/path \\
-        --output_dir /scratch/.../figures \\
+    python paper_figure.py \
+        --test_dir /path/to/test_cases_normalized \
+        --models gparcv1:/path gparcv2:/path mgkan:/path mgnet:/path \
+        --output_dir /scratch/.../figures \
         --sim_index 0 --rollout_steps 40 --error_fig
 """
 
-import argparse, sys, os, json
+import argparse, sys, os, json, re
 from pathlib import Path
 import torch
 import numpy as np
@@ -43,13 +44,28 @@ VAR_LABELS = {
     'total_energy':  r'$E$',
 }
 
+# Denormalization: physical = normalized * (max - min) + min
+# From variable_statistics.json global_statistics
+DENORM = {
+    'density':      {'min': 0.062139, 'max': 2.007674, 'unit': r'kg/m$^3$'},
+    'x_momentum':   {'min': -2.600878, 'max': 235.423531, 'unit': r'kg/(m$^2 \cdot$s)'},
+    'total_energy': {'min': 12399.199670, 'max': 424145.808785, 'unit': r'J/m$^3$'},
+}
+
+def denormalize(arr, var_name):
+    """Convert normalized [0,1] array to physical units."""
+    if var_name in DENORM:
+        d = DENORM[var_name]
+        return arr * (d['max'] - d['min']) + d['min']
+    return arr
+
 
 # ---------------------------------------------------------------------------
-# TIME FORMATTING
+# TITLE / TIME FORMATTING
 # ---------------------------------------------------------------------------
 
 def format_physical_time(step, delta_t):
-    """Convert a timestep index to a physical time string using the sim's delta_t."""
+    """Convert a timestep index to a physical time string."""
     if delta_t is None:
         return f't = {step}'
     phys_time = step * delta_t
@@ -59,6 +75,65 @@ def format_physical_time(step, delta_t):
         return f't = {phys_time:.4f} s'
     else:
         return f't = {phys_time:.2f} s'
+
+
+def format_sim_title(data, sim_name):
+    """
+    Build a title from physical simulation parameters.
+    
+    Priority: parse from filename (always has physical values),
+    then try data attributes as fallback.
+    Filename format: p_L_143750_rho_L_0.5625_test_with_pos_normalized
+    """
+    pressure = None
+    density = None
+    dt = None
+
+    # Parse from filename first (most reliable — always physical values)
+    m_p = re.search(r'p_L_(\d+\.?\d*)', sim_name)
+    if m_p:
+        pressure = float(m_p.group(1))
+
+    m_rho = re.search(r'rho_L_(\d+\.?\d*)', sim_name)
+    if m_rho:
+        density = float(m_rho.group(1))
+
+    # delta_t from data attributes (physical value)
+    for attr in ['delta_t_physical', 'delta_t_numeric']:
+        if hasattr(data, attr):
+            v = getattr(data, attr)
+            dt = v.item() if torch.is_tensor(v) else float(v)
+            break
+
+    # Fallback: try data attributes for pressure/density if not in filename
+    if pressure is None:
+        for attr in ['pressure_numeric', 'pressure_physical']:
+            if hasattr(data, attr):
+                v = getattr(data, attr)
+                pressure = v.item() if torch.is_tensor(v) else float(v)
+                break
+
+    if density is None:
+        for attr in ['density_numeric', 'density_physical']:
+            if hasattr(data, attr):
+                v = getattr(data, attr)
+                density = v.item() if torch.is_tensor(v) else float(v)
+                break
+
+    parts = []
+    if pressure is not None:
+        parts.append(f'Pressure = {pressure:g} Pa')
+    if density is not None:
+        parts.append(f'Density = {density:g} kg/m$^3$')
+    if dt is not None:
+        if dt < 1e-3:
+            parts.append(f'$\\Delta t$ = {dt:.2e} s')
+        else:
+            parts.append(f'$\\Delta t$ = {dt:g} s')
+
+    if parts:
+        return ',  '.join(parts)
+    return sim_name
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +160,7 @@ def parse_model_specs(raw_specs):
             if Path(mpath).exists():
                 model_specs[mtype] = mpath
             else:
-                print(f"⚠ Checkpoint not found: {mpath}")
+                print(f"Warning: Checkpoint not found: {mpath}")
             i = j
         else:
             i += 1
@@ -93,18 +168,19 @@ def parse_model_specs(raw_specs):
 
 
 # ===========================================================================
-# SINGLE-VARIABLE FIELD FIGURE
+# SINGLE-VARIABLE FIELD FIGURE (per-row colorbars)
 # ===========================================================================
 
 def make_field_figure(gt_list, model_preds, model_order, timesteps,
                       var_idx, var_name, output_path,
-                      sim_name='', dpi=300, cmap='RdBu_r', delta_t=None):
+                      sim_title='', dpi=300, cmap='RdBu_r', delta_t=None):
     """
     One figure for a single field variable.
 
     Columns: 3 timesteps
     Rows:    GT + each model
     Color range: from GT only (global across all shown timesteps)
+    Each row gets its own compact colorbar.
     """
     n_times = len(timesteps)
     n_rows = 1 + len(model_order)
@@ -113,21 +189,32 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
     gs_dim = int(np.sqrt(n_nodes))
     assert gs_dim ** 2 == n_nodes
 
-    # Color range from GT only
-    gt_vals = [gt_list[t][:, var_idx] for t in timesteps]
+    # Denormalize GT and predictions to physical units
+    gt_phys = [denormalize(g, var_name) for g in gt_list]
+    model_preds_phys = {}
+    for m in model_order:
+        if m in model_preds:
+            model_preds_phys[m] = [denormalize(p, var_name) for p in model_preds[m]]
+
+    # Color range from GT only (physical units)
+    gt_vals = [gt_phys[t][:, var_idx] for t in timesteps]
     vmin = min(v.min() for v in gt_vals)
     vmax = max(v.max() for v in gt_vals)
     pad = max((vmax - vmin) * 0.02, 1e-8)
     vmin -= pad
     vmax += pad
 
+    # Unit string for colorbar
+    unit_str = DENORM.get(var_name, {}).get('unit', '')
+    var_label = VAR_LABELS.get(var_name, var_name)
+
     # Layout
     cell_w, cell_h = 2.0, 1.9
     row_label_w = 1.3
-    cbar_w = 0.25
+    cbar_w = 0.45
     header_h = 0.6
 
-    fig_w = row_label_w + n_times * cell_w + cbar_w + 0.4
+    fig_w = row_label_w + n_times * cell_w + cbar_w + 0.3
     fig_h = header_h + n_rows * cell_h + 0.3
 
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
@@ -137,11 +224,15 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
     y_top = 1.0 - header_h / fig_h
     cw = cell_w / fig_w
     ch = cell_h / fig_h
+    cbar_norm_w = 0.015
+    cbar_gap = 0.008
 
     row_labels = ['Ground Truth'] + [MODEL_LABELS.get(m, m) for m in model_order]
 
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
     for row in range(n_rows):
-        data_src = gt_list if row == 0 else model_preds.get(model_order[row - 1], [])
+        data_src = gt_phys if row == 0 else model_preds_phys.get(model_order[row - 1], [])
 
         for ti, t in enumerate(timesteps):
             x = x0 + ti * cw
@@ -159,68 +250,82 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
                            origin='lower', interpolation='nearest')
             ax.set_xticks([])
             ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
 
             # Row label on first column
             if ti == 0:
                 ax.set_ylabel(row_labels[row], fontsize=9, fontweight='bold',
                               rotation=90, labelpad=8)
 
-            # Column header on first row — physical time
+            # Column header on first row
             if row == 0:
                 ax.set_title(format_physical_time(t, delta_t),
                              fontsize=10, fontweight='bold', pad=6)
 
-    # Colorbar — full height on right
-    cb_x = x0 + n_times * cw + 0.01
-    cb_y = y_top - n_rows * ch
-    cb_h = n_rows * ch * 0.90
-    cbar_ax = fig.add_axes([cb_x, cb_y, 0.015, cb_h])
-    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    sm = matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.ax.tick_params(labelsize=7)
-    var_label = VAR_LABELS.get(var_name, var_name)
-    cbar.set_label(var_label, fontsize=10, labelpad=4)
+        # Per-row colorbar
+        cb_x = x0 + n_times * cw + cbar_gap
+        cb_y = y_top - (row + 1) * ch + ch * 0.05
+        cb_h = ch * 0.80
 
-    # Title
-    fig.text(0.5, 0.97, f'{var_label}  —  {sim_name}',
-             fontsize=12, fontweight='bold', ha='center', va='top')
+        cbar_ax = fig.add_axes([cb_x, cb_y, cbar_norm_w, cb_h])
+        sm = matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=6)
+        # Add variable label with units to colorbar only on the middle row
+        if row == n_rows // 2:
+            cbar.set_label(var_label + ' (' + unit_str + ')', fontsize=7, labelpad=3)
+    var_label = VAR_LABELS.get(var_name, var_name)
+    fig.text(0.5, 0.97, f'{var_label}    {sim_title}',
+             fontsize=11, fontweight='bold', ha='center', va='top')
 
     fig.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"  ✓ {output_path.name}")
+    print(f"  \u2713 {output_path.name}")
 
 
 # ===========================================================================
-# SINGLE-VARIABLE ERROR FIGURE
+# SINGLE-VARIABLE ERROR FIGURE (per-row colorbars)
 # ===========================================================================
 
 def make_error_figure(gt_list, model_preds, model_order, timesteps,
                       var_idx, var_name, output_path,
-                      sim_name='', dpi=300, delta_t=None):
-    """Absolute error figure for one variable. No GT row."""
+                      sim_title='', dpi=300, delta_t=None):
+    """Absolute error figure for one variable. No GT row. Per-row colorbars."""
     n_times = len(timesteps)
     n_rows = len(model_order)
 
     n_nodes = gt_list[0].shape[0]
     gs_dim = int(np.sqrt(n_nodes))
 
-    # Error range (99th percentile across all models)
-    emax = 0
+    # Denormalize GT and predictions to physical units
+    gt_phys = [denormalize(g, var_name) for g in gt_list]
+    model_preds_phys = {}
     for m in model_order:
         if m in model_preds:
+            model_preds_phys[m] = [denormalize(p, var_name) for p in model_preds[m]]
+
+    # Unit string for colorbar
+    unit_str = DENORM.get(var_name, {}).get('unit', '')
+    var_label = VAR_LABELS.get(var_name, var_name)
+
+    # Per-model error max (99th percentile) in physical units
+    global_emax = 0
+    for m in model_order:
+        if m in model_preds_phys:
             for t in timesteps:
-                if t < len(model_preds[m]):
-                    err = np.abs(model_preds[m][t][:, var_idx] - gt_list[t][:, var_idx])
-                    emax = max(emax, float(np.percentile(err, 99)))
-    emax = max(emax, 1e-8)
+                if t < len(model_preds_phys[m]):
+                    err = np.abs(model_preds_phys[m][t][:, var_idx] - gt_phys[t][:, var_idx])
+                    global_emax = max(global_emax, float(np.percentile(err, 99)))
+    global_emax = max(global_emax, 1e-8)
 
     cell_w, cell_h = 2.0, 1.9
     row_label_w = 1.3
+    cbar_w = 0.45
     header_h = 0.6
 
-    fig_w = row_label_w + n_times * cell_w + 0.65
+    fig_w = row_label_w + n_times * cell_w + cbar_w + 0.3
     fig_h = header_h + n_rows * cell_h + 0.3
 
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
@@ -229,9 +334,13 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
     y_top = 1.0 - header_h / fig_h
     cw = cell_w / fig_w
     ch = cell_h / fig_h
+    cbar_norm_w = 0.015
+    cbar_gap = 0.008
+
+    norm = mcolors.Normalize(vmin=0, vmax=global_emax)
 
     for row, mname in enumerate(model_order):
-        preds = model_preds.get(mname, [])
+        preds = model_preds_phys.get(mname, [])
         label = MODEL_LABELS.get(mname, mname)
 
         for ti, t in enumerate(timesteps):
@@ -241,15 +350,17 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
             ax = fig.add_axes([x, y, cw * 0.93, ch * 0.90])
 
             if t < len(preds):
-                err = np.abs(preds[t][:, var_idx] - gt_list[t][:, var_idx]).reshape(gs_dim, gs_dim)
+                err = np.abs(preds[t][:, var_idx] - gt_phys[t][:, var_idx]).reshape(gs_dim, gs_dim)
             else:
                 err = np.full((gs_dim, gs_dim), np.nan)
 
             im = ax.imshow(err, cmap='hot_r', aspect='equal',
-                           vmin=0, vmax=emax,
+                           vmin=0, vmax=global_emax,
                            origin='lower', interpolation='nearest')
             ax.set_xticks([])
             ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
 
             if ti == 0:
                 ax.set_ylabel(label, fontsize=9, fontweight='bold',
@@ -258,25 +369,27 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
                 ax.set_title(format_physical_time(t, delta_t),
                              fontsize=10, fontweight='bold', pad=6)
 
-    # Colorbar
-    var_label = VAR_LABELS.get(var_name, var_name)
-    cb_x = x0 + n_times * cw + 0.01
-    cb_y = y_top - n_rows * ch
-    cb_h = n_rows * ch * 0.90
-    cbar_ax = fig.add_axes([cb_x, cb_y, 0.015, cb_h])
-    norm = mcolors.Normalize(vmin=0, vmax=emax)
-    sm = matplotlib.cm.ScalarMappable(norm=norm, cmap='hot_r')
-    sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.ax.tick_params(labelsize=7)
-    cbar.set_label(f'|Δ{var_label}|', fontsize=10, labelpad=4)
+        # Per-row colorbar
+        cb_x = x0 + n_times * cw + cbar_gap
+        cb_y = y_top - (row + 1) * ch + ch * 0.05
+        cb_h = ch * 0.80
 
-    fig.text(0.5, 0.97, f'Absolute Error: {var_label}  —  {sim_name}',
-             fontsize=12, fontweight='bold', ha='center', va='top')
+        cbar_ax = fig.add_axes([cb_x, cb_y, cbar_norm_w, cb_h])
+        sm = matplotlib.cm.ScalarMappable(norm=norm, cmap='hot_r')
+        sm.set_array([])
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=6)
+        # Add error label with units on middle row
+        if row == n_rows // 2:
+            cbar.set_label(f'|error| ({unit_str})', fontsize=7, labelpad=3)
+
+    var_label = VAR_LABELS.get(var_name, var_name)
+    fig.text(0.5, 0.97, f'Absolute Error: {var_label}    {sim_title}',
+             fontsize=11, fontweight='bold', ha='center', va='top')
 
     fig.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"  ✓ {output_path.name}")
+    print(f"  \u2713 {output_path.name}")
 
 
 # ===========================================================================
@@ -327,16 +440,20 @@ def main():
     steps = min(args.rollout_steps, len(sim) - 1)
     n_nodes = sample_data.x.size(0)
     gs_dim = int(np.sqrt(n_nodes))
-    print(f"  {len(sim)} timesteps, {n_nodes} nodes ({gs_dim}×{gs_dim}), rollout {steps} steps")
+    print(f"  {len(sim)} timesteps, {n_nodes} nodes ({gs_dim}x{gs_dim}), rollout {steps} steps")
 
-    # Extract delta_t from this simulation's global parameters
+    # Build simulation title from physical parameters
+    sim_title = format_sim_title(sample_data, sim_name)
+    print(f"  Title: {sim_title}")
+
+    # Extract delta_t for physical time labels
     sim_params = extract_global_params_from_data(sample_data)
     delta_t = sim_params.get('delta_t', None)
     if delta_t is not None and delta_t != 0:
-        print(f"  Δt = {delta_t} s")
+        print(f"  dt = {delta_t} s")
     else:
         delta_t = None
-        print(f"  Δt not found — column headers will show step indices")
+        print(f"  dt not found -- column headers will show step indices")
 
     # Ground truth
     gt_list = []
@@ -379,7 +496,7 @@ def main():
 
             del model; torch.cuda.empty_cache()
         except Exception as e:
-            print(f"    ✗ {MODEL_LABELS.get(mtype, mtype)} failed: {e}")
+            print(f"    Failed: {MODEL_LABELS.get(mtype, mtype)}: {e}")
             import traceback; traceback.print_exc()
 
     model_order = [m for m in model_order if m in model_preds]
@@ -393,7 +510,7 @@ def main():
             fpath = output_dir / f'{vn}_{sim_name}.{ext}'
             make_field_figure(gt_list, model_preds, model_order, timesteps,
                               vi, vn, fpath,
-                              sim_name=sim_name, dpi=args.dpi, cmap=args.cmap,
+                              sim_title=sim_title, dpi=args.dpi, cmap=args.cmap,
                               delta_t=delta_t)
 
         if args.error_fig:
@@ -401,10 +518,10 @@ def main():
                 epath = output_dir / f'{vn}_error_{sim_name}.{ext}'
                 make_error_figure(gt_list, model_preds, model_order, timesteps,
                                   vi, vn, epath,
-                                  sim_name=sim_name, dpi=args.dpi,
+                                  sim_title=sim_title, dpi=args.dpi,
                                   delta_t=delta_t)
 
-    print(f"\n✓ Done! {len(VAR_NAMES)} field figures + {'error figures ' if args.error_fig else ''}in {output_dir}")
+    print(f"\nDone! {len(VAR_NAMES)} field figures + {'error figures ' if args.error_fig else ''}in {output_dir}")
 
 
 if __name__ == "__main__":

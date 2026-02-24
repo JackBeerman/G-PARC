@@ -1329,7 +1329,7 @@ def main():
     laplacian_solver = SolveWeightLST2d(use_2hop_extension=False)
     
     feature_extractor = GraphConvFeatureExtractorV2(
-        in_channels=args.num_static_feats,
+        in_channels=args.num_static_feats + args.num_dynamic_feats,
         hidden_channels=args.hidden_channels,
         out_channels=args.feature_out_channels,
         num_layers=args.num_layers,

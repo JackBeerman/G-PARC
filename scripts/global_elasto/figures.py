@@ -11,9 +11,9 @@ Layout:
 
     Columns: 4 evenly spaced rollout timesteps
 
-Each cell shows displacement magnitude ||U|| = sqrt(Ux² + Uy²) on the
+Each cell shows displacement magnitude ||U|| = sqrt(Ux^2 + Uy^2) on the
 undeformed (reference) mesh using tripcolor with gouraud shading.
-Shared colorbar per row, consistent across all panels.
+Per-row colorbar, color range from GT global max across ALL timesteps.
 
 Usage:
     python model_comparison_figure.py \
@@ -28,6 +28,8 @@ import json
 import time
 import torch
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 from matplotlib.collections import PolyCollection
@@ -44,16 +46,10 @@ import warnings
 TEST_DIR = "/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/train"
 NORM_STATS_PATH = "/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/normalization_stats.json"
 
-# Model checkpoints
-GPARC_CHECKPOINT = "/scratch/jtb3sud/elasto_graphconv_V2/global_max_v3_lapdamp/best_model.pth"
-MGN_CHECKPOINT = "/scratch/jtb3sud/meshgraphnet/elasto/run1/best_model.pt"
-MGKAN_CHECKPOINT = "/scratch/jtb3sud/elasto_meshgraphkan/run1/best_model.pth"
-
 # ============================================================
 # Add project root to path
 # ============================================================
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -77,24 +73,16 @@ def load_simulation(test_dir, sim_index):
 def get_mesh_data(simulation):
     """Extract reference positions and elements from simulation."""
     first = simulation[0]
-    pos = first.x[:, :2].cpu().numpy()        # reference positions
-    elements = first.elements.cpu().numpy()     # triangulation
+    pos = first.x[:, :2].cpu().numpy()
+    elements = first.elements.cpu().numpy()
     edge_index = first.edge_index
     return pos, elements, edge_index
 
 
 def get_ground_truth_displacements(simulation, timesteps):
-    """
-    Get ground truth displacement at specified timesteps.
-    Returns displacement magnitude at each timestep.
-    
-    For rollout: cumulative displacement = sum of increments up to timestep t.
-    simulation[t].x[:, 2:4] contains cumulative displacement at timestep t.
-    simulation[t].y contains the INCREMENT from t to t+1.
-    """
+    """Get ground truth displacement at specified timesteps."""
     displacements = []
     for t in timesteps:
-        # x[:, 2:4] = [Ux_cumulative, Uy_cumulative] at timestep t
         u = simulation[t].x[:, 2:4].cpu().numpy()
         mag = np.sqrt(u[:, 0]**2 + u[:, 1]**2)
         displacements.append(mag)
@@ -106,7 +94,7 @@ def get_erosion_mask(simulation, timestep):
     data = simulation[timestep]
     if hasattr(data, 'x_element') and data.x_element is not None:
         erosion = data.x_element.squeeze().cpu().numpy()
-        return erosion < 0.5  # True = eroded
+        return erosion < 0.5
     return None
 
 
@@ -127,7 +115,6 @@ def load_gparcv2(checkpoint_path, norm_stats, sample_data, device):
     norm_method = norm_stats.get('normalization_method', 'global_max')
     max_position = pos_stats.get('max_position', 200.0)
 
-    # Auto-detect config from checkpoint directory
     ckpt_dir = Path(checkpoint_path).parent
     cfg = {}
     if (ckpt_dir / "config.json").exists():
@@ -150,7 +137,7 @@ def load_gparcv2(checkpoint_path, norm_stats, sample_data, device):
     )
 
     feature_extractor = GraphConvFeatureExtractorV2(
-        in_channels=sf,
+        in_channels=sf+df,
         hidden_channels=cfg.get('hidden_channels', 128),
         out_channels=foc,
         num_layers=cfg.get('num_layers', 4),
@@ -202,7 +189,6 @@ def load_gparcv1(checkpoint_path, norm_stats, sample_data, device):
     from integrator.integrator import IntegralGNN
     from models.parcv1_elasto import GPARC
 
-    # Auto-detect config from checkpoint directory
     ckpt_dir = Path(checkpoint_path).parent
     cfg = {}
     if (ckpt_dir / "config.json").exists():
@@ -304,7 +290,7 @@ def load_meshgraphkan(checkpoint_path, device):
 
 
 # ============================================================
-# ROLLOUT — shared logic for all models
+# ROLLOUT
 # ============================================================
 
 def rollout_gparcv2(model, simulation, num_steps, device):
@@ -318,7 +304,6 @@ def rollout_gparcv2(model, simulation, num_steps, device):
         else:
             data.pos = data.x[:, :2]
 
-    # Initialize MLS weights
     deriv = model.derivative_solver
     if hasattr(deriv, 'initialize_weights'):
         deriv.initialize_weights(simulation[0])
@@ -328,7 +313,6 @@ def rollout_gparcv2(model, simulation, num_steps, device):
     current_dynamic = simulation[0].x[:, sf:sf + df].clone()
     edge_index = simulation[0].edge_index
 
-    # Create a SINGLE reusable Data object (so cache keys stay stable)
     from torch_geometric.data import Data
     input_data = Data(
         x=torch.cat([static, current_dynamic], dim=-1),
@@ -336,7 +320,6 @@ def rollout_gparcv2(model, simulation, num_steps, device):
         pos=static,
         y=simulation[0].y,
     )
-    # Copy element data from first frame
     for attr in ['elements', 'x_element', 'y_element', 'mesh_id']:
         if hasattr(simulation[0], attr):
             setattr(input_data, attr, getattr(simulation[0], attr))
@@ -361,7 +344,7 @@ def rollout_gparcv2(model, simulation, num_steps, device):
 
 
 def rollout_gparcv1(model, simulation, num_steps, device):
-    """Run G-PARCv1 rollout, return cumulative displacements at each step."""
+    """Run G-PARCv1 rollout."""
     for data in simulation:
         data.x = data.x.to(device)
         data.y = data.y.to(device)
@@ -449,15 +432,11 @@ def denormalize_displacement(u_norm, norm_stats):
 
 
 # ============================================================
-# FIGURE CREATION
+# MESH RENDERING
 # ============================================================
 
 def render_mesh_poly(ax, pos, elements, node_values, cmap, norm, erosion_mask=None):
-    """
-    Render mesh using PolyCollection (element-averaged coloring).
-    Handles NaN values gracefully by showing those elements in gray.
-    """
-    # Filter eroded elements
+    """Render mesh using PolyCollection (element-averaged coloring)."""
     if erosion_mask is not None and erosion_mask.any():
         valid_mask = ~erosion_mask
     else:
@@ -468,15 +447,12 @@ def render_mesh_poly(ax, pos, elements, node_values, cmap, norm, erosion_mask=No
     if len(valid_elements) == 0:
         return
 
-    # Check for NaN in node values
     has_nan = np.any(np.isnan(node_values))
 
-    # Build polygons and element-averaged values
-    polygons = pos[valid_elements]  # [M, 3, 2]
-    elem_values = node_values[valid_elements].mean(axis=1)  # [M]
+    polygons = pos[valid_elements]
+    elem_values = node_values[valid_elements].mean(axis=1)
 
     if has_nan:
-        # Separate NaN and valid elements
         nan_elems = np.isnan(elem_values)
         valid_elems = ~nan_elems
 
@@ -498,7 +474,6 @@ def render_mesh_poly(ax, pos, elements, node_values, cmap, norm, erosion_mask=No
                             edgecolors=(0, 0, 0, 0.08), linewidths=0.15)
         ax.add_collection(pc)
 
-    # Show eroded elements as white/transparent
     if erosion_mask is not None and erosion_mask.any():
         eroded_elements = elements[erosion_mask]
         eroded_polygons = pos[eroded_elements]
@@ -507,20 +482,28 @@ def render_mesh_poly(ax, pos, elements, node_values, cmap, norm, erosion_mask=No
         ax.add_collection(pc_eroded)
 
 
+# ============================================================
+# FIGURE CREATION — per-row colorbars, GT global max
+# ============================================================
+
 def create_comparison_figure(
     pos, elements, gt_disps, model_disps, model_names,
     timesteps, sim_name, norm_stats, output_dir,
-    erosion_masks=None, dpi=300
+    erosion_masks=None, dpi=300,
+    deformed=False, gt_disp_vectors=None, model_disp_vectors=None,
 ):
     """
-    Create the publication comparison figure.
-    Uses PolyCollection rendering and GT-only colorbar range.
+    Create publication comparison figure with per-row colorbars.
+    Color range from GT global max across ALL timesteps.
+    
+    If deformed=True, renders on deformed mesh (pos + displacement).
+    gt_disp_vectors / model_disp_vectors: dict of [N,2] arrays at each timestep.
     """
-    n_rows = 1 + len(model_names)  # GT + models
+    n_rows = 1 + len(model_names)
     n_cols = len(timesteps)
     row_labels = ['Ground Truth'] + model_names
 
-    # Denormalize positions for display
+    # Denormalize positions
     method = norm_stats.get('normalization_method', 'global_max')
     if method == 'global_max':
         max_pos = norm_stats['position']['max_position']
@@ -528,105 +511,114 @@ def create_comparison_figure(
     else:
         pos_phys = pos
 
-    # Colorbar range from GROUND TRUTH ONLY (not diluted by diverging baselines)
+    # Color range from GT global max across ALL shown timesteps
     vmin = 0
-    vmax = max(np.nanmax(m) for m in gt_disps)
-
-    norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
+    vmax = float(np.percentile(np.concatenate([m.ravel() for m in gt_disps]), 99))
+    color_norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
     cmap = plt.cm.jet
+    print(f"  GT color vmax = {vmax:.4f}")
 
-    # Create figure
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(4.0 * n_cols, 3.2 * n_rows),
-        squeeze=False
-    )
+    # Compute deformed bounds if needed
+    if deformed and gt_disp_vectors is not None:
+        all_deformed_pos = []
+        for col_idx in range(n_cols):
+            all_deformed_pos.append(pos_phys + gt_disp_vectors[col_idx])
+            for name in model_names:
+                if name in model_disp_vectors:
+                    all_deformed_pos.append(pos_phys + model_disp_vectors[name][col_idx])
+        all_pos_stack = np.concatenate(all_deformed_pos, axis=0)
+        xlim = (all_pos_stack[:, 0].min() - 2, all_pos_stack[:, 0].max() + 2)
+        ylim = (all_pos_stack[:, 1].min() - 2, all_pos_stack[:, 1].max() + 2)
+    else:
+        xlim = (pos_phys[:, 0].min() - 1, pos_phys[:, 0].max() + 1)
+        ylim = (pos_phys[:, 1].min() - 1, pos_phys[:, 1].max() + 1)
 
-    for col_idx, t in enumerate(timesteps):
-        emask = erosion_masks.get(t, None) if erosion_masks else None
+    # Layout with manual axes placement for per-row colorbars
+    cell_w, cell_h = 4.0, 3.2
+    row_label_w = 1.2
+    cbar_w = 0.5
+    header_h = 0.6
 
-        for row_idx in range(n_rows):
-            ax = axes[row_idx, col_idx]
+    fig_w = row_label_w + n_cols * cell_w + cbar_w + 0.3
+    fig_h = header_h + n_rows * cell_h + 0.3
 
-            if row_idx == 0:
-                values = gt_disps[col_idx]
-            else:
-                name = model_names[row_idx - 1]
-                values = model_disps[name][col_idx]
+    config_label = 'Deformed' if deformed else 'Reference'
+    suffix = '_deformed' if deformed else ''
 
-            # Render with PolyCollection
-            render_mesh_poly(ax, pos_phys, elements, values, cmap, norm, emask)
+    for fmt in ['png', 'pdf']:
+        fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
 
-            ax.set_aspect('equal')
-            ax.set_xlim(pos_phys[:, 0].min() - 1, pos_phys[:, 0].max() + 1)
-            ax.set_ylim(pos_phys[:, 1].min() - 1, pos_phys[:, 1].max() + 1)
+        x0 = row_label_w / fig_w
+        y_top = 1.0 - header_h / fig_h
+        cw = cell_w / fig_w
+        ch = cell_h / fig_h
+        cbar_norm_w = 0.012
+        cbar_gap = 0.008
 
-            # Remove all axes and box outline
-            ax.set_xticks([])
-            ax.set_yticks([])
-            for spine in ax.spines.values():
-                spine.set_visible(False)
+        for row in range(n_rows):
+            for col_idx, t in enumerate(timesteps):
+                emask = erosion_masks.get(t, None) if erosion_masks else None
 
-            # Column titles (timestep)
-            if row_idx == 0:
-                ax.set_title(f't = {t}', fontsize=11, fontweight='bold')
+                x = x0 + col_idx * cw
+                y = y_top - (row + 1) * ch
 
-            # Row labels
-            if col_idx == 0:
-                ax.set_ylabel(row_labels[row_idx], fontsize=10, fontweight='bold')
+                ax = fig.add_axes([x, y, cw * 0.95, ch * 0.90])
 
-    # Shared colorbar
-    cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.set_label('Displacement Magnitude (mm)', fontsize=10)
-    cbar.ax.tick_params(labelsize=8)
+                if row == 0:
+                    values = gt_disps[col_idx]
+                    disp_vec = gt_disp_vectors[col_idx] if gt_disp_vectors else None
+                else:
+                    name = model_names[row - 1]
+                    values = model_disps[name][col_idx]
+                    disp_vec = model_disp_vectors[name][col_idx] if model_disp_vectors and name in model_disp_vectors else None
 
-    plt.subplots_adjust(
-        left=0.06, right=0.90, top=0.93, bottom=0.05,
-        wspace=0.08, hspace=0.12
-    )
-    fig.suptitle(
-        f'Rollout Displacement Comparison — {sim_name}',
-        fontsize=13, fontweight='bold', y=0.97
-    )
+                # Choose reference or deformed mesh positions
+                if deformed and disp_vec is not None:
+                    render_pos = pos_phys + disp_vec
+                else:
+                    render_pos = pos_phys
 
-    # Save PNG
-    out_path = Path(output_dir) / f'model_comparison_{sim_name}.png'
-    fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
-    plt.close(fig)
-    print(f"\n✅ Saved: {out_path}")
+                render_mesh_poly(ax, render_pos, elements, values, cmap, color_norm, emask)
 
-    # Save PDF for LaTeX
-    pdf_path = Path(output_dir) / f'model_comparison_{sim_name}.pdf'
-    fig2, axes2 = plt.subplots(n_rows, n_cols, figsize=(4.0 * n_cols, 3.2 * n_rows), squeeze=False)
-    for col_idx, t in enumerate(timesteps):
-        emask = erosion_masks.get(t, None) if erosion_masks else None
-        for row_idx in range(n_rows):
-            ax = axes2[row_idx, col_idx]
-            values = gt_disps[col_idx] if row_idx == 0 else model_disps[model_names[row_idx - 1]][col_idx]
-            render_mesh_poly(ax, pos_phys, elements, values, cmap, norm, emask)
-            ax.set_aspect('equal')
-            ax.set_xlim(pos_phys[:, 0].min() - 1, pos_phys[:, 0].max() + 1)
-            ax.set_ylim(pos_phys[:, 1].min() - 1, pos_phys[:, 1].max() + 1)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            for spine in ax.spines.values():
-                spine.set_visible(False)
-            if row_idx == 0:
-                ax.set_title(f't = {t}', fontsize=11, fontweight='bold')
-            if col_idx == 0:
-                ax.set_ylabel(row_labels[row_idx], fontsize=10, fontweight='bold')
+                ax.set_aspect('equal')
+                ax.set_xlim(*xlim)
+                ax.set_ylim(*ylim)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
 
-    cbar_ax2 = fig2.add_axes([0.92, 0.15, 0.015, 0.7])
-    cbar2 = fig2.colorbar(sm, cax=cbar_ax2)
-    cbar2.set_label('Displacement Magnitude (mm)', fontsize=10)
-    cbar2.ax.tick_params(labelsize=8)
-    plt.subplots_adjust(left=0.06, right=0.90, top=0.93, bottom=0.05, wspace=0.08, hspace=0.12)
-    fig2.suptitle(f'Rollout Displacement Comparison — {sim_name}', fontsize=13, fontweight='bold', y=0.97)
-    fig2.savefig(pdf_path, bbox_inches='tight')
-    plt.close(fig2)
-    print(f"✅ Saved: {pdf_path}")
+                if row == 0:
+                    ax.set_title(f't = {t}', fontsize=11, fontweight='bold', pad=6)
+
+                if col_idx == 0:
+                    ax.set_ylabel(row_labels[row], fontsize=10, fontweight='bold',
+                                  rotation=90, labelpad=8)
+
+            # Per-row colorbar
+            cb_x = x0 + n_cols * cw + cbar_gap
+            cb_y = y_top - (row + 1) * ch + ch * 0.05
+            cb_h = ch * 0.80
+
+            cbar_ax = fig.add_axes([cb_x, cb_y, cbar_norm_w, cb_h])
+            sm = plt.cm.ScalarMappable(cmap=cmap, norm=color_norm)
+            sm.set_array([])
+            cbar = fig.colorbar(sm, cax=cbar_ax)
+            cbar.ax.tick_params(labelsize=6)
+
+            # Label on middle row only
+            if row == n_rows // 2:
+                cbar.set_label('||U|| (mm)', fontsize=8, labelpad=3)
+
+        # Title
+        fig.text(0.5, 0.97,
+                 f'Displacement Magnitude ({config_label} Config) \u2014 {sim_name}',
+                 fontsize=12, fontweight='bold', ha='center', va='top')
+
+        out_path = Path(output_dir) / f'model_comparison{suffix}_{sim_name}.{fmt}'
+        fig.savefig(out_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+        print(f"  Saved: {out_path}")
 
 
 # ============================================================
@@ -645,13 +637,14 @@ def main():
                         default=['gparcv2'],
                         help="Models to include: gparcv2 gparcv1 mgn mgkan")
 
-    # Override paths from command line if desired
     parser.add_argument("--test_dir", type=str, default=TEST_DIR)
     parser.add_argument("--norm_stats", type=str, default=NORM_STATS_PATH)
-    parser.add_argument("--gparcv2_ckpt", type=str, default=GPARC_CHECKPOINT)
+    parser.add_argument("--gparcv2_ckpt", type=str, default=None)
     parser.add_argument("--gparcv1_ckpt", type=str, default=None)
-    parser.add_argument("--mgn_ckpt", type=str, default=MGN_CHECKPOINT)
-    parser.add_argument("--mgkan_ckpt", type=str, default=MGKAN_CHECKPOINT)
+    parser.add_argument("--mgn_ckpt", type=str, default=None)
+    parser.add_argument("--mgkan_ckpt", type=str, default=None)
+    parser.add_argument("--deformed", action='store_true',
+                        help="Show deformed configuration (mesh moves with displacement)")
 
     args = parser.parse_args()
 
@@ -667,32 +660,33 @@ def main():
     # Load simulation
     simulation, sim_name = load_simulation(args.test_dir, args.sim_index)
     pos, elements, edge_index = get_mesh_data(simulation)
-    total_steps = len(simulation) - 1  # -1 because last frame has no target
+    total_steps = len(simulation) - 1
     print(f"Simulation: {sim_name}, nodes={pos.shape[0]}, steps={total_steps}")
 
     # Pick evenly spaced timesteps
     timesteps = np.linspace(0, total_steps - 1, args.num_timesteps, dtype=int).tolist()
     print(f"Timesteps: {timesteps}")
 
-    # Ground truth: cumulative displacement at each timestep
+    # Ground truth: displacement magnitude in physical units
     gt_disps_norm = []
+    gt_disp_vectors = []
     erosion_masks = {}
     for t in timesteps:
         u = simulation[t].x[:, 2:4].cpu().numpy()
         u_phys = u * max_disp
         mag = np.sqrt(u_phys[:, 0]**2 + u_phys[:, 1]**2)
         gt_disps_norm.append(mag)
+        gt_disp_vectors.append(u_phys)
 
         emask = get_erosion_mask(simulation, t)
         if emask is not None:
             erosion_masks[t] = emask
 
-    # Model registry: key -> (display_name, load_fn, rollout_fn)
+    # Load models and run rollouts
     sample_data = simulation[0]
     sample_data.pos = sample_data.x[:, :2]
     rollout_steps = total_steps
 
-    # Storage for loaded models and rollout results
     model_names = []
     all_disps = {}
 
@@ -735,23 +729,27 @@ def main():
         print("ERROR: No valid models selected. Use --models gparcv2 gparcv1 mgn mgkan")
         return
 
-    # Extract displacement magnitudes at selected timesteps (physical units)
+    # Extract displacement magnitudes and vectors at selected timesteps (physical units)
     model_disps = {}
+    model_disp_vectors = {}
     for name in model_names:
         disps = all_disps[name]
         mags = []
+        vecs = []
         for t in timesteps:
-            u = disps[t]  # [N, 2] normalized
+            u = disps[t]
             u_phys = u * max_disp
             mag = np.sqrt(u_phys[:, 0]**2 + u_phys[:, 1]**2)
             if np.any(np.isnan(mag)):
                 nan_pct = 100 * np.sum(np.isnan(mag)) / len(mag)
-                print(f"  ⚠️  {name} has {nan_pct:.1f}% NaN nodes at t={t}")
+                print(f"  Warning: {name} has {nan_pct:.1f}% NaN nodes at t={t}")
             mags.append(mag)
+            vecs.append(u_phys)
         model_disps[name] = mags
+        model_disp_vectors[name] = vecs
 
-    # Create figure
-    print("\nCreating comparison figure...")
+    # Create figure (reference configuration)
+    print("\nCreating comparison figure (reference config)...")
     create_comparison_figure(
         pos=pos, elements=elements,
         gt_disps=gt_disps_norm,
@@ -763,21 +761,41 @@ def main():
         output_dir=output_dir,
         erosion_masks=erosion_masks,
         dpi=args.dpi,
+        deformed=False,
     )
 
-    # Print RRMSE summary for the selected simulation
+    # Create deformed configuration figure if requested
+    if args.deformed:
+        print("\nCreating comparison figure (deformed config)...")
+        create_comparison_figure(
+            pos=pos, elements=elements,
+            gt_disps=gt_disps_norm,
+            model_disps=model_disps,
+            model_names=model_names,
+            timesteps=timesteps,
+            sim_name=sim_name,
+            norm_stats=norm_stats,
+            output_dir=output_dir,
+            erosion_masks=erosion_masks,
+            dpi=args.dpi,
+            deformed=True,
+            gt_disp_vectors=gt_disp_vectors,
+            model_disp_vectors=model_disp_vectors,
+        )
+
+    # Print RRMSE summary
     print("\n" + "="*60)
     print("PER-SIMULATION ROLLOUT ERROR (last timestep)")
     print("="*60)
     t_final = timesteps[-1]
     gt_u = simulation[t_final].x[:, 2:4].cpu().numpy() * max_disp
-    gt_norm = np.sqrt(np.mean(gt_u**2))
+    gt_norm_val = np.sqrt(np.mean(gt_u**2))
 
     for name in model_names:
         disps = all_disps[name]
         pred_u = disps[t_final] * max_disp
         rmse = np.sqrt(np.nanmean((pred_u - gt_u)**2))
-        rrmse = rmse / (gt_norm + 1e-10)
+        rrmse = rmse / (gt_norm_val + 1e-10)
         print(f"  {name:20s}: RMSE={rmse:.4f} mm, RRMSE={rrmse:.4f}")
     print("="*60)
 

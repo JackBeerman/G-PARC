@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J gparc_shock_v2
-#SBATCH -o gparc_shock_v2.out
-#SBATCH -e gparc_shock_v2.err
+#SBATCH -J gparc_shock_FAST
+#SBATCH -o gparc_shock_FAST.out
+#SBATCH -e gparc_shock_FAST.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
 #SBATCH -t 48:10:00
@@ -26,7 +26,7 @@ export MKL_NUM_THREADS=1
 # ============================================================
 # DATA PATHS — EDIT THESE
 # ============================================================
-OUTPUT_DIR="/scratch/jtb3sud/shocktube_v2_training"
+OUTPUT_DIR="/scratch/jtb3sud/shocktube_v2_training/nospadeFAST"
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 TRAIN_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/normalized_datasets/train_cases_normalized"
@@ -39,7 +39,7 @@ TEST_DIR="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDo
 NUM_EPOCHS=100
 SEQ_LEN=4
 STRIDE=4
-LR=1e-4
+LR=3e-4
 GRAD_CLIP_NORM=1.0
 NUM_WORKERS=0
 

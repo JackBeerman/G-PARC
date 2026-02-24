@@ -30,7 +30,7 @@ OUTPUT_DIR="/scratch/jtb3sud/shocktube_comparison/paper_figures"
 # MODEL CHECKPOINTS
 # ============================================================
 GPARCV1_CKPT="${BASE_DATA}/shock_tube_20250927_104720_run_mod10_750/shock_tube_best_model.pth"
-GPARCV2_CKPT="/scratch/jtb3sud/shocktube_v2_training/best_model.pth"
+GPARCV2_CKPT="/scratch/jtb3sud/shocktube_v2_training/nospadeFAST/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/shocktube/run_101_300/best_model.pth"
 MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/shocktube/run1/best_model.pt"
 

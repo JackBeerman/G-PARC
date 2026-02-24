@@ -206,7 +206,9 @@ class RiverDifferentiator(nn.Module):
                                self.num_static_feats + self.num_dynamic_feats]
         
         # --- 2. Learned Features (Static) ---
-        learned_features = self.feature_extractor(static_feats, edge_index, pos=static_feats[:, :2])
+        #learned_features = self.feature_extractor(static_feats, edge_index, pos=static_feats[:, :2])
+        fe_input = torch.cat([static_feats, dynamic_feats], dim=-1)
+        learned_features = self.feature_extractor(fe_input, edge_index, pos=static_feats[:, :2])
 
         # --- 3. Build mesh_data for MLS (with robust mesh_id propagation) ---
         mesh_data = self._build_mesh_data(static_feats[:, :2], edge_index)

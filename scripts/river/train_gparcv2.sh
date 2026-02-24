@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J gparc_river_v2_150
-#SBATCH -o gparc_river_v2_150.out
-#SBATCH -e gparc_river_v2_150.err
+#SBATCH -J gparc_4
+#SBATCH -o gparc_4.out
+#SBATCH -e gparc_4.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
 #SBATCH -t 72:00:00
@@ -10,7 +10,7 @@
 #SBATCH --mem=120G
 
 echo "================================================================"
-echo "G-PARCv2 RIVER: RESUMED - SEQ_LEN=20, STRIDE=5"
+echo "G-PARCv2 RIVER:"
 echo "================================================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
@@ -29,7 +29,7 @@ export MKL_NUM_THREADS=1
 BASE_DATA="/standard/sds_baek_energetic/HEC_RAS (River)"
 TRAIN_DIR="${BASE_DATA}/pt_train_normalized"
 VAL_DIR="${BASE_DATA}/pt_val_normalized"
-OUTPUT_DIR="/scratch/jtb3sud/gparcv2/river/run1_0_150"
+OUTPUT_DIR="/scratch/jtb3sud/gparcv2/river/4"
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 # Resume from best seq_len=1 checkpoint
@@ -39,8 +39,8 @@ CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 # TRAINING HYPERPARAMETERS
 # ============================================================
 NUM_EPOCHS=150
-SEQ_LEN=1              # Up from 1 -> 20
-STRIDE=1                # Larger stride for diverse windows
+SEQ_LEN=4              # Up from 1 -> 20
+STRIDE=4                # Larger stride for diverse windows
 LR=1e-4                 # Reduced for fine-tuning
 GRAD_CLIP_NORM=1.0
 NUM_WORKERS=4
@@ -55,7 +55,7 @@ SS_FINAL_RATIO=0.0
 # ============================================================
 # ARCHITECTURE (must match original)
 # ============================================================
-NUM_LAYERS=2
+NUM_LAYERS=4
 HIDDEN_CHANNELS=64
 FEATURE_OUT_CHANNELS=128
 DROPOUT=0.2

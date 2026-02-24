@@ -29,7 +29,7 @@ OUTPUT_DIR="/scratch/jtb3sud/shocktube_comparison"
 # CHECKPOINTS
 # ============================================================
 GPARCV1_CKPT="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt/shock_tube_20250927_104720_run_mod10_750/shock_tube_best_model.pth"
-GPARCV2_CKPT="/scratch/jtb3sud/shocktube_v2_training/best_model.pth"
+GPARCV2_CKPT="/scratch/jtb3sud/shocktube_v2_training/nospadeFAST/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/shocktube/run_101_300/best_model.pth"
 MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/shocktube/run1/best_model.pt"
 

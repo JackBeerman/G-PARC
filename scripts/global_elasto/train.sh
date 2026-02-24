@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J gparc_2hopcont
-#SBATCH -o gparc_2hopcont.out
-#SBATCH -e gparc_2hopcont.err
+#SBATCH -J gparc_v2
+#SBATCH -o gparc_v2.out
+#SBATCH -e gparc_v2.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --constraint=a100_80gb
-#SBATCH -t 24:00:00
+#SBATCH -t 72:00:00
 #SBATCH -c 8
 #SBATCH --mem=80G
 
@@ -34,7 +34,7 @@ export MKL_NUM_THREADS=1
 # ============================================================
 TRAIN_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/train"
 VAL_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/val"
-OUTPUT_DIR="/scratch/jtb3sud/elasto_graphconv_V2/2hop"
+OUTPUT_DIR="/scratch/jtb3sud/gparcv2/elasto"
 
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
@@ -43,7 +43,7 @@ CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 # ============================================================
 NUM_EPOCHS=1500           # Long cosine schedule — model was still improving at 548
 SEQ_LEN=16               # 16-step rollout from the start (no Phase 1/2 needed)
-STRIDE=16                # Non-overlapping windows
+STRIDE=8                # Non-overlapping windows
 LR=3e-4                  # PLAID authors' LR, proven effective in Phase 2
 NUM_WORKERS=4
 GRAD_CLIP_NORM=2.0       # Kept from Phase 2, handles 3e-4 LR spikes
@@ -103,7 +103,7 @@ if [ -f "$NORM_STATS_FILE" ]; then
     echo "✓ Copied normalization stats to output directory"
 fi
 
-apptainer run --nv "$CONTAINER" 2hop.py \
+apptainer run --nv "$CONTAINER" train.py \
     --train_dir "$TRAIN_DIR" \
     --val_dir "$VAL_DIR" \
     --output_dir "$OUTPUT_DIR" \
@@ -115,7 +115,6 @@ apptainer run --nv "$CONTAINER" 2hop.py \
     --num_dynamic_feats "$NUM_DYNAMIC_FEATS" \
     --integrator "euler" \
     --num_layers "$NUM_LAYERS" \
-    --resume "/scratch/jtb3sud/elasto_graphconv_V2/2hop/latest_model.pth" \
     --hidden_channels "$HIDDEN_CHANNELS" \
     --feature_out_channels "$FEATURE_OUT_CHANNELS" \
     --dropout "$DROPOUT" \

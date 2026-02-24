@@ -29,7 +29,7 @@ NORM_STATS="$DATA_ROOT/normalization_stats.json"
 OUTPUT_DIR="/scratch/jtb3sud/elasto_comparison/paper_figures"
 
 # Model checkpoints
-GPARCV2_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
+GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/elasto/best_model.pth"
 GPARCV1_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/elasto/best_model.pth"
 MGN_CKPT="/scratch/jtb3sud/meshgraphnet/elasto/run1/best_model.pt"
@@ -41,7 +41,7 @@ MODELS="gparcv2 gparcv1 mgkan mgn"
 SIM_INDEX=0
 
 # Number of timestep columns
-NUM_TIMESTEPS=4
+NUM_TIMESTEPS=3
 
 echo ""
 echo "Configuration:"
@@ -58,6 +58,7 @@ apptainer run --nv "$CONTAINER" figures.py \
     --test_dir "$TEST_DIR" \
     --norm_stats "$NORM_STATS" \
     --output_dir "$OUTPUT_DIR" \
+    --deformed \
     --models $MODELS \
     --gparcv2_ckpt "$GPARCV2_CKPT" \
     --gparcv1_ckpt "$GPARCV1_CKPT" \

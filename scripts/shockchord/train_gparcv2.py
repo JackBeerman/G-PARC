@@ -31,7 +31,7 @@ import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from utilities.featureextractor import GraphConvFeatureExtractorV2
-from differentiator.shocktubedifferentiator import ShockTubeDifferentiator
+from differentiator.nospade import ShockTubeDifferentiator
 from differentiator.hop import SolveGradientsLST, SolveWeightLST2d
 from models.shocktube_gparcv2 import GPARC_ShockTube_V2
 from data.ShockChorddt import ShockTubeRolloutDataset, get_simulation_ids
@@ -88,7 +88,7 @@ def create_model(args, sample_data):
     print(f"  Output: {args.feature_out_channels}")
     
     feature_extractor = GraphConvFeatureExtractorV2(
-        in_channels=args.num_static_feats,
+        in_channels=args.num_static_feats + args.num_dynamic_feats,  # 2 + 3 = 5
         hidden_channels=args.hidden_channels,
         out_channels=args.feature_out_channels,
         num_layers=args.num_layers,
@@ -124,7 +124,7 @@ def create_model(args, sample_data):
         heads=args.spade_heads,
         concat=args.spade_concat,
         dropout=args.spade_dropout,
-        zero_init=args.zero_init,
+        zero_init=False,#args.zero_init,
     )
     
     print("Initializing MLS weights...")

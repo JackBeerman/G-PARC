@@ -513,9 +513,6 @@ class ElastoPlasticDifferentiator(nn.Module):
             print(f"✓ MLS weights initialized")
 
     def forward(self, full_state, edge_index):
-        # DEBUG: Check inputs
-        #print(f"[DEBUG] full_state shape: {full_state.shape}, range: [{full_state.min():.4f}, {full_state.max():.4f}]")
-       # print(f"[DEBUG] full_state has NaN: {torch.isnan(full_state).any()}, Inf: {torch.isinf(full_state).any()}")
         
         if not self._weights_initialized:
             raise RuntimeError("initialize_weights() must be called before forward()")
@@ -523,14 +520,13 @@ class ElastoPlasticDifferentiator(nn.Module):
         static_features = full_state[:, :self.num_static_feats]
         dynamic_state = full_state[:, self.num_static_feats:]
         
-        # Check after split
-        #print(f"[DEBUG] static range: [{static_features.min():.4f}, {static_features.max():.4f}]")
-        #print(f"[DEBUG] dynamic range: [{dynamic_state.min():.4f}, {dynamic_state.max():.4f}]")
+        # Current (static only):
+        #learned_features = self.feature_extractor(static_features, edge_index, pos=static_features)
         
-        #learned_features = self.feature_extractor(static_features, edge_index)
-        learned_features = self.feature_extractor(static_features, edge_index, pos=static_features)
-        #print(f"[DEBUG] learned_features range: [{learned_features.min():.4f}, {learned_features.max():.4f}]")
-        #print(f"[DEBUG] learned_features has NaN: {torch.isnan(learned_features).any()}")
+        # New (static + dynamic):
+        fe_input = torch.cat([static_features, dynamic_state], dim=-1)
+        learned_features = self.feature_extractor(fe_input, edge_index, pos=static_features)
+
     
         
         # Create Data object for MLS operators

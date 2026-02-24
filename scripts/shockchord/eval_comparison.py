@@ -316,7 +316,7 @@ def load_model_gparcv1(ckpt_path, sample_data, device):
 def load_model_gparcv2(ckpt_path, sample_data, device):
     """Load G-PARCv2 shocktube model (ShockTubeDifferentiator + FiLM)."""
     from models.shocktube_gparcv2 import GPARC_ShockTube_V2
-    from differentiator.shocktubedifferentiator import ShockTubeDifferentiator
+    from differentiator.nospade import ShockTubeDifferentiator
     from utilities.featureextractor import GraphConvFeatureExtractorV2
     from differentiator.hop import SolveGradientsLST, SolveWeightLST2d
 
@@ -343,7 +343,7 @@ def load_model_gparcv2(ckpt_path, sample_data, device):
     laplacian_solver = SolveWeightLST2d(pos_mean=pos_mean, pos_std=pos_std, use_2hop_extension=False)
 
     feature_extractor = GraphConvFeatureExtractorV2(
-        in_channels=sf, hidden_channels=hidden, out_channels=feat_out,
+        in_channels=sf+df, hidden_channels=hidden, out_channels=feat_out,
         num_layers=n_layers, dropout=config.get('dropout', 0.2),
         use_layer_norm=config.get('use_layer_norm', True),
         use_relative_pos=config.get('use_relative_pos', True),
