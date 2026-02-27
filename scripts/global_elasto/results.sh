@@ -34,9 +34,10 @@ GPARCV2_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
 GPARCV1_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/elasto/best_model.pth"
 MGN_CKPT="/scratch/jtb3sud/meshgraphnet/elasto/run1/best_model.pt"
+GSAGE_CKPT="/scratch/jtb3sud/graphsage/elasto/best_model.pth"
 
 # Which models to compare (space-separated: gparcv2 gparcv1 mgkan mgn)
-MODELS="gparcv2 gparcv1 mgkan mgn"
+MODELS="gparcv2 gparcv1 mgkan mgn graphsage"
 
 # Max simulations (set to empty for all)
 MAX_SIMS=
@@ -60,6 +61,7 @@ apptainer run --nv "$CONTAINER" results.py \
     --gparcv1_ckpt "$GPARCV1_CKPT" \
     --mgkan_ckpt "$MGKAN_CKPT" \
     --mgn_ckpt "$MGN_CKPT" \
+    --graphsage_ckpt "$GSAGE_CKPT" \
     ${MAX_SIMS:+--max_sims $MAX_SIMS} \
     --device cuda
 

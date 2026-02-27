@@ -2,8 +2,8 @@
 """
 Unified Shock Tube Model Comparison Evaluation
 ================================================
-Evaluates multiple models (G-PARCv2, MeshGraphKAN, MeshGraphNet) on the same
-test simulations with identical metrics.
+Evaluates multiple models (G-PARC with MLS, MeshGraphKAN, MeshGraphNet, GraphSAGE)
+on the same test simulations with identical metrics.
 
 Variables: density, x_momentum, total_energy (y_momentum skipped at index 2)
 Grid: 64x64 structured (4096 nodes)
@@ -18,7 +18,7 @@ Outputs:
 Usage:
     python eval_comparison.py \
         --test_dir /path/to/test \
-        --models gparcv2:/path/v2.pth mgkan:/path/kan.pth mgnet:/path/net.pth \
+        --models gparcv2:/path/v2.pth mgkan:/path/kan.pth mgnet:/path/net.pth gsage:/path/sage.pth \
         --output_dir ./comparison \
         --rollout_steps 40
 """
@@ -57,12 +57,14 @@ MODEL_COLORS = {
     'gparcv2': '#1f77b4',
     'mgkan': '#ff7f0e',
     'mgnet': '#2ca02c',
+    'gsage': '#9467bd',
 }
 MODEL_LABELS = {
-    'gparcv1': 'G-PARCv1',
-    'gparcv2': 'G-PARCv2',
+    'gparcv1': 'G-PARC Baseline',
+    'gparcv2': 'G-PARC with MLS',
     'mgkan': 'MeshGraphKAN',
     'mgnet': 'MeshGraphNet',
+    'gsage': 'GraphSAGE',
 }
 
 
@@ -233,7 +235,7 @@ def compute_per_step_rrmse(pred_list, gt_list):
 # ===========================================================================
 
 def load_model_gparcv1(ckpt_path, sample_data, device):
-    """Load G-PARCv1 shocktube model (FeatureExtractorGNN + DerivativeGNN + IntegralGNN)."""
+    """Load G-PARC Baseline shocktube model (FeatureExtractorGNN + DerivativeGNN + IntegralGNN)."""
     from models.shocktube import GPARC
     from utilities.featureextractor import FeatureExtractorGNN
     from differentiator.differentiator import DerivativeGNN
@@ -314,7 +316,7 @@ def load_model_gparcv1(ckpt_path, sample_data, device):
 
 
 def load_model_gparcv2(ckpt_path, sample_data, device):
-    """Load G-PARCv2 shocktube model (ShockTubeDifferentiator + FiLM)."""
+    """Load G-PARC with MLS shocktube model (ShockTubeDifferentiator + FiLM)."""
     from models.shocktube_gparcv2 import GPARC_ShockTube_V2
     from differentiator.nospade import ShockTubeDifferentiator
     from utilities.featureextractor import GraphConvFeatureExtractorV2
@@ -449,11 +451,47 @@ def load_model_mgnet(ckpt_path, sample_data, device):
     return model
 
 
+def load_model_gsage(ckpt_path, sample_data, device):
+    """Load GraphSAGE shocktube model.
+
+    ShocktubeGNN uses ALL 4 raw dynamic features (no skip) and no global params.
+    Input: static(2) + raw_dynamic(4) = 6, Output: 4 (all raw dynamic).
+    The rollout function handles filtering predictions to the 3 kept variables.
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent / 'GraphSAGE'))
+    from models.graphsage import ShocktubeGNN
+
+    ckpt_dir = Path(ckpt_path).parent
+    config_path = ckpt_dir / "config.json"
+    config = json.load(open(config_path)) if config_path.exists() else {}
+
+    in_channels = config.get('in_channels', 6)
+    out_channels = config.get('out_channels', 4)
+    hidden = config.get('hidden_channels', 177)
+    n_layers = config.get('num_layers', 8)
+    dropout = config.get('dropout', 0.0)
+
+    model = ShocktubeGNN(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        hidden_channels=hidden,
+        num_layers=n_layers,
+        dropout=dropout,
+    )
+
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    sd = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+    model.load_state_dict(sd)
+    model.to(device).eval()
+    return model
+
+
 LOADERS = {
     'gparcv1': load_model_gparcv1,
     'gparcv2': load_model_gparcv2,
     'mgkan': load_model_mgkan,
     'mgnet': load_model_mgnet,
+    'gsage': load_model_gsage,
 }
 
 
@@ -463,7 +501,7 @@ LOADERS = {
 
 @torch.no_grad()
 def rollout_gparcv1(model, sim, num_steps, device):
-    """G-PARCv1 rollout: feature_extractor → DerivativeGNN → IntegralGNN → accumulate."""
+    """G-PARC Baseline rollout: feature_extractor → DerivativeGNN → IntegralGNN → accumulate."""
     from utilities.embed import GlobalParameterProcessor
     sim = [d.to(device) for d in sim]
     for d in sim:
@@ -513,7 +551,7 @@ def rollout_gparcv1(model, sim, num_steps, device):
 
 @torch.no_grad()
 def rollout_gparcv2(model, sim, num_steps, device):
-    """G-PARCv2 rollout using FiLM conditioning."""
+    """G-PARC with MLS rollout using FiLM conditioning."""
     sim = [d.to(device) for d in sim]
     for d in sim:
         if not hasattr(d, 'pos') or d.pos is None:
@@ -623,11 +661,54 @@ def rollout_mgnet(model, sim, num_steps, device):
     return predictions
 
 
+@torch.no_grad()
+def rollout_gsage(model, sim, num_steps, device):
+    """GraphSAGE delta-prediction rollout.
+
+    ShocktubeGNN operates on ALL 4 raw dynamic features (no skip, no global params).
+    Input:  x = [static(2), raw_dynamic(4)] = 6
+    Output: delta [N, 4] for all 4 raw dynamic features.
+
+    After accumulating the full 4-feature state, we filter to the 3 kept
+    variables (KEEP_INDICES) so predictions are comparable to GT.
+    """
+    from models.graphsage import compute_edge_attr
+
+    sim = [d.to(device) for d in sim]
+    for d in sim:
+        if not hasattr(d, 'pos') or d.pos is None:
+            d.pos = d.x[:, :NUM_STATIC]
+
+    first = sim[0]
+    # Full raw dynamic state (all 4 features, no skip)
+    current_raw_dynamic = first.x[:, NUM_STATIC:NUM_STATIC + RAW_DYNAMIC]
+    predictions = []
+
+    for step in range(min(num_steps, len(sim))):
+        data_t = sim[step]
+        static = data_t.x[:, :NUM_STATIC]
+        pos = data_t.pos if hasattr(data_t, 'pos') and data_t.pos is not None else static
+
+        # GraphSAGE input: [static, raw_dynamic] = [N, 6]
+        node_features = torch.cat([static, current_raw_dynamic], dim=-1)
+        edge_attr = compute_edge_attr(pos, data_t.edge_index)
+
+        pred_delta = model(node_features, data_t.edge_index, edge_attr=edge_attr)
+        current_raw_dynamic = current_raw_dynamic + pred_delta
+
+        # Filter to kept variables for comparison with GT
+        kept = current_raw_dynamic[:, KEEP_INDICES]
+        predictions.append(kept.cpu().numpy())
+
+    return predictions
+
+
 ROLLOUT_FNS = {
     'gparcv1': rollout_gparcv1,
     'gparcv2': rollout_gparcv2,
     'mgkan': rollout_mgkan,
     'mgnet': rollout_mgnet,
+    'gsage': rollout_gsage,
 }
 
 

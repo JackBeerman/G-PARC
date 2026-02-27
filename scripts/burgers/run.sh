@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J burgers_bbs
-#SBATCH -o burgers_bbs.out
-#SBATCH -e burgers_bbs.err
+#SBATCH -J burg_concat
+#SBATCH -o burg_concat.out
+#SBATCH -e burg_concat.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
-#SBATCH -t 72:00:00
+#SBATCH -t 12:00:00
 #SBATCH -c 8
 #SBATCH --mem=60G
 
 echo "================================================================"
-echo "G-PARCv2 BURGERS: FD LAPLACIAN + FiLM ON REYNOLDS"
+echo "G-PARCv2 BURGERS — CONCAT+MLP FUSION (no SPADE)"
 echo "================================================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
@@ -22,15 +22,14 @@ module load apptainer
 
 # Paths
 DATA_ROOT="/scratch/jtb3sud/processed_burgers_graph"
-OUTPUT_DIR="/scratch/jtb3sud/burgers_v2_fd_film"
+OUTPUT_DIR="/scratch/jtb3sud/burgers_v2_concat"
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
-SCRIPT_DIR="$HOME/G-PARC/scripts/burgers/bbs"
 
-# Architecture (matched to other v2 models)
+# Architecture
 HIDDEN_CHANNELS=64
 FEATURE_OUT=128
 NUM_FE_LAYERS=4
-SPADE_HEADS=2
+FUSION_HIDDEN_DIM=128
 DIFFUSION_TYPE="fd"
 
 # Training
@@ -49,6 +48,7 @@ echo ""
 echo "Configuration:"
 echo "  Diffusion:  $DIFFUSION_TYPE"
 echo "  FiLM:       enabled"
+echo "  Fusion:     concat+MLP (hidden=$FUSION_HIDDEN_DIM, no zero_init)"
 echo "  Integrator: $INTEGRATOR"
 echo "  LR: $LR | Epochs: $NUM_EPOCHS"
 echo "  Seq Len: $SEQ_LEN"
@@ -69,7 +69,7 @@ apptainer run --nv "$CONTAINER" train_burgers.py \
     --hidden_channels "$HIDDEN_CHANNELS" \
     --feature_out_channels "$FEATURE_OUT" \
     --num_fe_layers "$NUM_FE_LAYERS" \
-    --spade_heads "$SPADE_HEADS" \
+    --fusion_hidden_dim "$FUSION_HIDDEN_DIM" \
     --diffusion_type "$DIFFUSION_TYPE" \
     --use_film \
     --seq_len "$SEQ_LEN" \
@@ -79,3 +79,10 @@ apptainer run --nv "$CONTAINER" train_burgers.py \
     --ss_final_ratio "$SS_FINAL" \
     --device auto \
     --num_workers 4
+
+EXIT_CODE=$?
+echo ""
+echo "================================================================"
+echo "Finished at: $(date) | Exit: $EXIT_CODE"
+if [ $EXIT_CODE -eq 0 ]; then echo "✅ SUCCESS"; else echo "❌ FAILED"; fi
+echo "================================================================"

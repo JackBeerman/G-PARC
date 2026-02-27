@@ -113,6 +113,7 @@ def create_model(args, sample_data, norm_stats):
     print(f"\nPhysics feature configuration:")
     print(f"  Advection indices: {list(range(args.num_dynamic_feats))}")
     print(f"  Velocity indices: {args.velocity_indices}")
+    print(f"  Fusion: concat+MLP (hidden={args.fusion_hidden_dim})")
     print(f"  Integrator: {args.integrator}")
 
     derivative_solver = RiverDifferentiator(
@@ -125,11 +126,8 @@ def create_model(args, sample_data, norm_stats):
         list_adv_idx=list(range(args.num_dynamic_feats)),
         list_dif_idx=list(range(args.num_dynamic_feats)),
         velocity_indices=args.velocity_indices,
-        spade_random_noise=args.spade_random_noise,
-        heads=args.spade_heads,
-        concat=args.spade_concat,
-        dropout=args.spade_dropout,
-        zero_init=args.zero_init
+        fusion_hidden_dim=args.fusion_hidden_dim,
+        zero_init=args.zero_init,
     )
     
     print("Initializing MLS weights...")
@@ -167,27 +165,20 @@ def train_epoch(model, train_loader, optimizer, device, epoch, total_epochs, arg
     pbar = tqdm(train_loader, desc=f"Training (TF={teacher_forcing_ratio:.3f})")
     
     for sequence in pbar:
-        # Handle list wrapping if necessary (common in some PyG Loaders)
         if isinstance(sequence, list) and len(sequence) > 0 and isinstance(sequence[0], list):
             sequence = sequence[0]
             
-        # Move to device
         sequence = [d.to(device) for d in sequence]
         
-        # Ensure pos exists (River data sometimes lacks it in the batch)
         for data in sequence:
             if not hasattr(data, 'pos') or data.pos is None:
-                data.pos = data.x[:, :2] # Assuming first 2 static are x,y
+                data.pos = data.x[:, :2]
 
         optimizer.zero_grad()
         
-        # Forward pass with Scheduled Sampling
         predictions = model(sequence, dt=1.0, teacher_forcing_ratio=teacher_forcing_ratio)
         
         loss = 0.0
-        
-        # Calculate loss over the sequence
-        # Note: sequence[t].y contains the Ground Truth for step t+1
         for t, pred in enumerate(predictions):
             target = sequence[t].y[:, :args.num_dynamic_feats]
             step_loss = F.mse_loss(pred, target)
@@ -235,7 +226,6 @@ def validate_epoch(model, val_loader, device, args):
             if not hasattr(data, 'pos') or data.pos is None:
                 data.pos = data.x[:, :2]
 
-        # Validation always uses TF=0.0 (rollout)
         predictions = model(sequence, dt=1.0, teacher_forcing_ratio=0.0)
         
         loss = 0.0
@@ -287,12 +277,17 @@ def main():
     # Model / Integrator
     parser.add_argument("--integrator", type=str, default="euler", choices=["euler", "heun", "rk4"])
     
-    # Differentiator (SPADE)
+    # Fusion (concat+MLP)
+    parser.add_argument("--fusion_hidden_dim", type=int, default=128,
+                        help="Hidden dimension for PhysicsFusionMLP blocks")
+    parser.add_argument("--zero_init", action="store_true", default=False,
+                        help="Zero-init fusion MLP output (NOT recommended)")
+    
+    # Legacy SPADE args (accepted but ignored by new differentiator)
     parser.add_argument("--spade_random_noise", action="store_true", default=False)
     parser.add_argument("--spade_heads", type=int, default=4)
     parser.add_argument("--spade_concat", action="store_true", default=True)
     parser.add_argument("--spade_dropout", type=float, default=0.1)
-    parser.add_argument("--zero_init", action="store_true", default=False)
     
     # Scheduled Sampling
     parser.add_argument("--ss_schedule", type=str, default="linear",
@@ -321,7 +316,6 @@ def main():
     output_dir.mkdir(exist_ok=True, parents=True)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     
-    # Load normalization statistics (if available)
     norm_stats = load_normalization_stats(args.train_dir)
     
     print("\n" + "="*70)
@@ -336,7 +330,6 @@ def main():
     print(f"  Final TF ratio: {args.ss_final_ratio}")
     print("="*70)
     
-    # Load dataset
     train_dataset = RiverDataset(
         directory=args.train_dir, seq_len=args.seq_len, stride=args.stride,
         num_static_feats=args.num_static_feats, num_dynamic_feats=args.num_dynamic_feats,
@@ -352,27 +345,22 @@ def main():
     train_loader = DataLoader(train_dataset, **loader_kwargs)
     val_loader = DataLoader(val_dataset, **loader_kwargs)
     
-    # Get sample data
     print("\nGetting sample for initialization...")
     init_seq = next(iter(train_loader))
     if isinstance(init_seq, list) and len(init_seq) > 0 and isinstance(init_seq[0], list):
         init_seq = init_seq[0]
     sample_data = init_seq[0].to(device)
 
-    # Ensure pos exists for initialization (using logic from Elastoplastic manual fix)
     if not hasattr(sample_data, 'pos') or sample_data.pos is None:
          sample_data.pos = sample_data.x[:, :2]
     
-    # Create model
     print("\nCreating model...")
     model = create_model(args, sample_data, norm_stats).to(device)
     count_parameters(model)
     
-    # Optimizer and scheduler (AdamW + Cosine)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
     
-    # Resume from checkpoint
     start_epoch = 0
     best_val_loss = float('inf')
     
@@ -383,6 +371,7 @@ def main():
         
         if args.fresh_scheduler:
             start_epoch = 0
+            best_val_loss = float('inf')
             print(f"  Fresh optimizer + scheduler (lr={args.lr})")
             optimizer = AdamW(model.parameters(), lr=args.lr)
             scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
@@ -391,20 +380,18 @@ def main():
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if checkpoint['scheduler_state_dict']:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        
-        best_val_loss = checkpoint.get('metrics', {}).get('val_loss', float('inf'))
-        if best_val_loss == float('inf'): # Try legacy key
-            best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+            best_val_loss = checkpoint.get('metrics', {}).get('val_loss', float('inf'))
+            if best_val_loss == float('inf'):
+                best_val_loss = checkpoint.get('best_val_loss', float('inf'))
             
         print(f"  Resuming from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
     
-    # Save config
     config = vars(args)
     config['scheduled_sampling'] = True
+    config['fusion_type'] = 'concat_mlp'
     with open(output_dir / "config.json", 'w') as f:
         json.dump(config, f, indent=2)
 
-    # Training loop
     history = {
         'train_loss': [],
         'val_loss': [],
@@ -432,7 +419,6 @@ def main():
         history['val_loss'].append(val_metrics['loss'])
         history['teacher_forcing_ratio'].append(train_metrics['teacher_forcing_ratio'])
         
-        # Save Best
         if val_metrics['loss'] < best_val_loss:
             best_val_loss = val_metrics['loss']
             save_checkpoint(
@@ -442,7 +428,6 @@ def main():
             )
             print(f"✓ Saved best model (val_loss: {best_val_loss:.6f})")
         
-        # Save Latest
         save_checkpoint(
             model, optimizer, scheduler, epoch,
             {'val_loss': val_metrics['loss'], 'teacher_forcing_ratio': train_metrics['teacher_forcing_ratio']},

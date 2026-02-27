@@ -5,7 +5,7 @@
 #SBATCH -e river_comparison.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
-#SBATCH -t 00:20:00
+#SBATCH -t 00:10:00
 #SBATCH -c 4
 #SBATCH --mem=40G
 
@@ -31,9 +31,10 @@ OUTPUT_DIR="/scratch/jtb3sud/river_comparison"
 # MODEL CHECKPOINTS — update these paths
 # ============================================================
 GPARCV1_CKPT="/home/jtb3sud/G-PARC/weights/new_river/modelseq20_ep250.pth"
-GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/river/4/best_model.pth"
+GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/river/concat/20/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/river/best_model.pth"
 MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/river/run1/best_model.pt"
+GSAGE_CKPT="/scratch/jtb3sud/graphsage/river/best_model.pth"
 
 # ============================================================
 # TIME SEGMENTS (matching your event structure)
@@ -73,6 +74,13 @@ else
     echo "  ✗ MeshGraphNet: not found at $MGNET_CKPT"
 fi
 
+if [ -f "$GSAGE_CKPT" ]; then
+    MODELS="$MODELS graphsage:$GSAGE_CKPT"
+    echo "  ✓ GraphSAGE: $GSAGE_CKPT"
+else
+    echo "  ✗ GraphSAGE: not found at $GSAGE_CKPT"
+fi
+
 if [ -z "$MODELS" ]; then
     echo "❌ No model checkpoints found. Exiting."
     exit 1
@@ -106,5 +114,4 @@ if [ $EXIT_CODE -eq 0 ]; then
 else
     echo "❌ Failed with exit code $EXIT_CODE"
 fi
-
 exit $EXIT_CODE

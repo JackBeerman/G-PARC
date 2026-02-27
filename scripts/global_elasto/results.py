@@ -248,6 +248,12 @@ def load_mgn(ckpt_path, norm_stats, sample_data, device):
     return model
 
 
+def load_graphsage(ckpt_path, norm_stats, sample_data, device):
+    from models.graphsage import load_model as load_gsage
+    model = load_gsage('elasto', ckpt_path, device=device)
+    return model
+
+
 # ==============================================================================
 # ROLLOUT FUNCTIONS
 # ==============================================================================
@@ -356,6 +362,29 @@ def rollout_mgn(model, simulation, num_steps, device, **kw):
     return disps
 
 
+def rollout_graphsage(model, simulation, num_steps, device, **kw):
+    from models.graphsage import compute_edge_attr
+
+    first = simulation[0]
+    sf = model.num_static_feats
+    df = model.num_dynamic_feats
+    static = first.x[:, :sf].to(device)
+    current = first.x[:, sf:sf + df].clone().to(device)
+    edge_index = first.edge_index.to(device)
+
+    pos = first.pos.to(device) if hasattr(first, 'pos') and first.pos is not None else static
+    edge_feat = compute_edge_attr(pos, edge_index)
+
+    disps = [current.cpu().numpy()]
+    with torch.no_grad():
+        for t in range(num_steps):
+            feats = torch.cat([static, current], dim=-1)
+            delta = model(feats, edge_index, edge_attr=edge_feat)
+            current = current + delta
+            disps.append(current.cpu().numpy())
+    return disps
+
+
 # ==============================================================================
 # METRICS
 # ==============================================================================
@@ -370,15 +399,18 @@ def compute_timestep_metrics(gt_disps, pred_disps, max_disp):
         max_disp: denorm factor
 
     Returns:
-        rmse_t: [T] array of RMSE in mm
-        rrmse_t: [T] array of RRMSE (dimensionless)
+        rmse_t: [T] array of RMSE in mm (combined U)
+        rrmse_t: [T] array of RRMSE (combined U)
         ux_rmse_t, uy_rmse_t: per-component RMSE
+        ux_rrmse_t, uy_rrmse_t: per-component RRMSE
     """
     T = min(len(gt_disps), len(pred_disps))
     rmse_t = np.zeros(T)
     rrmse_t = np.zeros(T)
     ux_rmse_t = np.zeros(T)
     uy_rmse_t = np.zeros(T)
+    ux_rrmse_t = np.zeros(T)
+    uy_rrmse_t = np.zeros(T)
 
     for t in range(T):
         gt = gt_disps[t] * max_disp
@@ -389,6 +421,8 @@ def compute_timestep_metrics(gt_disps, pred_disps, max_disp):
             rrmse_t[t] = np.nan
             ux_rmse_t[t] = np.nan
             uy_rmse_t[t] = np.nan
+            ux_rrmse_t[t] = np.nan
+            uy_rrmse_t[t] = np.nan
             continue
 
         diff = pr - gt
@@ -401,7 +435,12 @@ def compute_timestep_metrics(gt_disps, pred_disps, max_disp):
         ux_rmse_t[t] = np.sqrt(np.mean(diff[:, 0] ** 2))
         uy_rmse_t[t] = np.sqrt(np.mean(diff[:, 1] ** 2))
 
-    return rmse_t, rrmse_t, ux_rmse_t, uy_rmse_t
+        gt_ux_rms = np.sqrt(np.mean(gt[:, 0] ** 2)) + 1e-10
+        gt_uy_rms = np.sqrt(np.mean(gt[:, 1] ** 2)) + 1e-10
+        ux_rrmse_t[t] = ux_rmse_t[t] / gt_ux_rms
+        uy_rrmse_t[t] = uy_rmse_t[t] / gt_uy_rms
+
+    return rmse_t, rrmse_t, ux_rmse_t, uy_rmse_t, ux_rrmse_t, uy_rrmse_t
 
 
 def precompute_shape_derivatives(pos, elements):
@@ -607,17 +646,19 @@ def compute_strain_metrics(gt_disps, pred_disps, shape_cache, max_disp,
 # ==============================================================================
 
 MODEL_COLORS = {
-    'G-PARCv2': '#1f77b4',
-    'G-PARCv1': '#ff7f0e',
+    'G-PARC with MLS': '#1f77b4',
+    'G-PARC Baseline': '#ff7f0e',
     'MeshGraphKAN': '#2ca02c',
     'MeshGraphNet': '#d62728',
+    'GraphSAGE': '#9467bd',
 }
 
 MODEL_STYLES = {
-    'G-PARCv2': '-',
-    'G-PARCv1': '--',
+    'G-PARC with MLS': '-',
+    'G-PARC Baseline': '--',
     'MeshGraphKAN': '-.',
     'MeshGraphNet': ':',
+    'GraphSAGE': (0, (3, 1, 1, 1)),
 }
 
 
@@ -693,6 +734,47 @@ def plot_component_comparison(all_ux_metrics, all_uy_metrics,
         ax.set_ylabel('RMSE (mm)', fontsize=12)
         ax.set_title(f'{comp} Displacement RMSE', fontsize=13, fontweight='bold')
         ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(left=0)
+
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Saved: {output_path}")
+
+
+def plot_rrmse_components(all_rrmse, all_ux_rrmse, all_uy_rrmse, output_path):
+    """Plot RRMSE for Ux, Uy, and combined U in a 3-panel figure."""
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+
+    panels = [
+        (ax1, all_ux_rrmse, '$U_x$ RRMSE'),
+        (ax2, all_uy_rrmse, '$U_y$ RRMSE'),
+        (ax3, all_rrmse, '$\\|\\mathbf{U}\\|$ RRMSE'),
+    ]
+
+    for ax, data, title in panels:
+        for name, sim_arrays in data.items():
+            if not sim_arrays:
+                continue
+            max_t = max(len(a) for a in sim_arrays)
+            padded = np.full((len(sim_arrays), max_t), np.nan)
+            for i, a in enumerate(sim_arrays):
+                padded[i, :len(a)] = a
+            mean = np.nanmean(padded, axis=0)
+            std = np.nanstd(padded, axis=0)
+            t_axis = np.arange(max_t)
+
+            color = MODEL_COLORS.get(name, 'gray')
+            style = MODEL_STYLES.get(name, '-')
+            ax.plot(t_axis, mean, style, color=color, linewidth=2, label=name)
+            ax.fill_between(t_axis, mean - std, mean + std, alpha=0.15,
+                             color=color)
+
+        ax.set_xlabel('Rollout Timestep', fontsize=11)
+        ax.set_ylabel('RRMSE', fontsize=11)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         ax.set_xlim(left=0)
 
@@ -862,13 +944,13 @@ def plot_strain_dashboard(all_vm_rmse, all_vm_rmse_high, all_csi, output_path):
 
 MODEL_REGISTRY = {
     'gparcv2': {
-        'display_name': 'G-PARCv2',
+        'display_name': 'G-PARC with MLS',
         'load_fn': load_gparcv2,
         'rollout_fn': rollout_gparcv2,
         'ckpt_arg': 'gparcv2_ckpt',
     },
     'gparcv1': {
-        'display_name': 'G-PARCv1',
+        'display_name': 'G-PARC Baseline',
         'load_fn': load_gparcv1,
         'rollout_fn': rollout_gparcv1,
         'ckpt_arg': 'gparcv1_ckpt',
@@ -884,6 +966,12 @@ MODEL_REGISTRY = {
         'load_fn': load_mgn,
         'rollout_fn': rollout_mgn,
         'ckpt_arg': 'mgn_ckpt',
+    },
+    'graphsage': {
+        'display_name': 'GraphSAGE',
+        'load_fn': load_graphsage,
+        'rollout_fn': rollout_graphsage,
+        'ckpt_arg': 'graphsage_ckpt',
     },
 }
 
@@ -914,6 +1002,7 @@ def main():
                         help="Path to G-PARCv1 config.json (auto-detect from ckpt dir if not set)")
     parser.add_argument("--mgkan_ckpt", type=str, default=None)
     parser.add_argument("--mgn_ckpt", type=str, default=None)
+    parser.add_argument("--graphsage_ckpt", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -1006,6 +1095,8 @@ def main():
     all_rrmse = {v['display_name']: [] for v in loaded_models.values()}
     all_ux_rmse = {v['display_name']: [] for v in loaded_models.values()}
     all_uy_rmse = {v['display_name']: [] for v in loaded_models.values()}
+    all_ux_rrmse = {v['display_name']: [] for v in loaded_models.values()}
+    all_uy_rrmse = {v['display_name']: [] for v in loaded_models.values()}
     # Strain / deformation metrics
     all_vm_rmse = {v['display_name']: [] for v in loaded_models.values()}
     all_vm_rmse_high = {v['display_name']: [] for v in loaded_models.values()}
@@ -1052,14 +1143,15 @@ def main():
                 )
                 elapsed = time.time() - t0
 
-                rmse_t, rrmse_t, ux_t, uy_t = compute_timestep_metrics(
-                    gt_disps, pred_disps, max_disp
-                )
+                rmse_t, rrmse_t, ux_t, uy_t, ux_rrmse_t, uy_rrmse_t = \
+                    compute_timestep_metrics(gt_disps, pred_disps, max_disp)
 
                 all_rmse[name].append(rmse_t)
                 all_rrmse[name].append(rrmse_t)
                 all_ux_rmse[name].append(ux_t)
                 all_uy_rmse[name].append(uy_t)
+                all_ux_rrmse[name].append(ux_rrmse_t)
+                all_uy_rrmse[name].append(uy_rrmse_t)
 
                 # Strain metrics (requires triangulation)
                 strain_m = {}
@@ -1079,10 +1171,14 @@ def main():
                 # Final timestep metrics
                 final_rmse = rmse_t[-1] if not np.isnan(rmse_t[-1]) else np.nan
                 final_rrmse = rrmse_t[-1] if not np.isnan(rrmse_t[-1]) else np.nan
+                final_ux_rrmse = ux_rrmse_t[-1] if not np.isnan(ux_rrmse_t[-1]) else np.nan
+                final_uy_rrmse = uy_rrmse_t[-1] if not np.isnan(uy_rrmse_t[-1]) else np.nan
 
                 sim_entry = {
                     'rmse_final': float(final_rmse),
                     'rrmse_final': float(final_rrmse),
+                    'ux_rrmse_final': float(final_ux_rrmse),
+                    'uy_rrmse_final': float(final_uy_rrmse),
                     'time_s': float(elapsed),
                     'diverged': bool(np.any(np.isnan(rmse_t))),
                 }
@@ -1116,6 +1212,8 @@ def main():
 
         final_rmses = [a[-1] for a in all_rmse[name] if not np.isnan(a[-1])]
         final_rrmses = [a[-1] for a in all_rrmse[name] if not np.isnan(a[-1])]
+        final_ux_rrmses = [a[-1] for a in all_ux_rrmse[name] if not np.isnan(a[-1])]
+        final_uy_rrmses = [a[-1] for a in all_uy_rrmse[name] if not np.isnan(a[-1])]
         n_diverged = sum(1 for a in all_rmse[name] if np.any(np.isnan(a)))
 
         summary[name] = {
@@ -1123,6 +1221,10 @@ def main():
             'rmse_final_std': float(np.std(final_rmses)) if final_rmses else np.nan,
             'rrmse_final_mean': float(np.mean(final_rrmses)) if final_rrmses else np.nan,
             'rrmse_final_std': float(np.std(final_rrmses)) if final_rrmses else np.nan,
+            'ux_rrmse_final_mean': float(np.mean(final_ux_rrmses)) if final_ux_rrmses else np.nan,
+            'ux_rrmse_final_std': float(np.std(final_ux_rrmses)) if final_ux_rrmses else np.nan,
+            'uy_rrmse_final_mean': float(np.mean(final_uy_rrmses)) if final_uy_rrmses else np.nan,
+            'uy_rrmse_final_std': float(np.std(final_uy_rrmses)) if final_uy_rrmses else np.nan,
             'n_valid': len(final_rmses),
             'n_diverged': n_diverged,
         }
@@ -1146,8 +1248,10 @@ def main():
         s = summary[name]
         print(
             f"\n  {name}:"
-            f"\n    RMSE (final):  {s['rmse_final_mean']:.4f} ± {s['rmse_final_std']:.4f} mm"
-            f"\n    RRMSE (final): {s['rrmse_final_mean']:.4f} ± {s['rrmse_final_std']:.4f}"
+            f"\n    RMSE (final):     {s['rmse_final_mean']:.4f} ± {s['rmse_final_std']:.4f} mm"
+            f"\n    RRMSE U (final):  {s['rrmse_final_mean']:.4f} ± {s['rrmse_final_std']:.4f}"
+            f"\n    RRMSE Ux (final): {s['ux_rrmse_final_mean']:.4f} ± {s['ux_rrmse_final_std']:.4f}"
+            f"\n    RRMSE Uy (final): {s['uy_rrmse_final_mean']:.4f} ± {s['uy_rrmse_final_std']:.4f}"
             f"\n    Valid: {s['n_valid']}, Diverged: {s['n_diverged']}"
         )
         if 'vm_rmse_final_mean' in s:
@@ -1183,6 +1287,11 @@ def main():
     plot_component_comparison(
         all_ux_rmse, all_uy_rmse,
         output_dir / 'component_rmse.png',
+    )
+
+    plot_rrmse_components(
+        all_rrmse, all_ux_rrmse, all_uy_rrmse,
+        output_dir / 'component_rrmse.png',
     )
 
     if len(summary) > 1:

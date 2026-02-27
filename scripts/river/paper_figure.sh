@@ -18,6 +18,7 @@ module purge
 module load apptainer
 
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
+SCRIPT_DIR="$HOME/G-PARC/scripts/river"
 
 # ============================================================
 # DATA
@@ -31,17 +32,16 @@ OUTPUT_DIR="/scratch/jtb3sud/river_comparison/paper_figures"
 # MODEL CHECKPOINTS
 # ============================================================
 GPARCV1_CKPT="/home/jtb3sud/G-PARC/weights/new_river/modelseq20_ep250.pth"
-GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/river/run1_0_150/best_model.pth"
+GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/river/concat/latest_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/river/run2_51_150/best_model.pth"
-#
-#/scratch/jtb3sud/delta/river/best_model.pth
 MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/river/run1/best_model.pt"
+GSAGE_CKPT="/scratch/jtb3sud/graphsage/river/best_model.pth"
 
 # ============================================================
 # BUILD MODEL LIST
 # ============================================================
 MODELS=""
-for name_ckpt in "gparcv1:$GPARCV1_CKPT" "gparcv2:$GPARCV2_CKPT" "mgkan:$MGKAN_CKPT" "mgnet:$MGNET_CKPT"; do
+for name_ckpt in "gparcv1:$GPARCV1_CKPT" "gparcv2:$GPARCV2_CKPT" "mgkan:$MGKAN_CKPT" "mgnet:$MGNET_CKPT" "graphsage:$GSAGE_CKPT"; do
     mtype="${name_ckpt%%:*}"
     mpath="${name_ckpt#*:}"
     if [ -f "$mpath" ]; then

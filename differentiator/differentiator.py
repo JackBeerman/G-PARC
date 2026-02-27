@@ -521,11 +521,11 @@ class ElastoPlasticDifferentiator(nn.Module):
         dynamic_state = full_state[:, self.num_static_feats:]
         
         # Current (static only):
-        #learned_features = self.feature_extractor(static_features, edge_index, pos=static_features)
+        learned_features = self.feature_extractor(static_features, edge_index, pos=static_features)
         
         # New (static + dynamic):
-        fe_input = torch.cat([static_features, dynamic_state], dim=-1)
-        learned_features = self.feature_extractor(fe_input, edge_index, pos=static_features)
+        #fe_input = torch.cat([static_features, dynamic_state], dim=-1)
+        #learned_features = self.feature_extractor(fe_input, edge_index, pos=static_features)
 
     
         

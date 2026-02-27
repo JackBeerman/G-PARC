@@ -14,6 +14,7 @@ Burgers specifics:
   - Dynamic Features: [u, v]             → 2 channels
   - Physics: Advection(MLS) + Diffusion(FD)
   - FiLM conditioning on Reynolds number
+  - Fusion: concat+MLP (not SPADE)
   - dt=1.0 (FiLM handles Re variation)
   - Integrator: Euler/Heun/RK4
 """
@@ -108,6 +109,7 @@ def create_model(args, sample_data):
     print(f"  Dynamic feats: {args.num_dynamic_feats} (u, v)")
     print(f"  Diffusion:     {args.diffusion_type}")
     print(f"  FiLM on Re:    {args.use_film}")
+    print(f"  Fusion:        concat+MLP (hidden={args.fusion_hidden_dim})")
     print(f"  Integrator:    {args.integrator}")
 
     derivative_solver = BurgersDifferentiator(
@@ -115,8 +117,7 @@ def create_model(args, sample_data):
         gradient_solver=gradient_solver,
         laplacian_solver=laplacian_solver,
         n_fe_features=args.feature_out_channels,
-        spade_heads=args.spade_heads,
-        spade_dropout=args.spade_dropout,
+        fusion_hidden_dim=args.fusion_hidden_dim,
         zero_init=args.zero_init,
         diffusion_type=args.diffusion_type,
         use_film=args.use_film,
@@ -160,49 +161,25 @@ def train_epoch(model, train_loader, optimizer, device, epoch, total_epochs, arg
         if isinstance(sequence, list) and len(sequence) > 0 and isinstance(sequence[0], list):
             sequence = sequence[0]
 
-        # Move to device
+        sequence = [d.to(device) for d in sequence]
+
         for data in sequence:
-            for key, value in data.items():
-                if torch.is_tensor(value):
-                    data[key] = value.to(device)
             if not hasattr(data, 'pos') or data.pos is None:
                 data.pos = data.x[:, :2]
 
         optimizer.zero_grad()
 
-        # Forward with teacher forcing
-        predictions = []
-        F_prev = None
+        # Forward with scheduled sampling
+        if hasattr(model, 'forward') and 'teacher_forcing_ratio' in model.forward.__code__.co_varnames:
+            predictions = model(sequence, dt=1.0, teacher_forcing_ratio=tf_ratio)
+        else:
+            predictions = model(sequence, dt=1.0)
 
-        for i, data in enumerate(sequence):
-            x = data.x
-            edge_index = data.edge_index
-            static_feats = x[:, :model.num_static_feats]
-
-            if i == 0:
-                current_dynamic = x[:, model.num_static_feats:]
-            else:
-                if tf_ratio > 0 and torch.rand(1).item() < tf_ratio:
-                    current_dynamic = data.x[:, model.num_static_feats:]
-                else:
-                    current_dynamic = F_prev.detach()
-
-            F_next = model.integrator(
-                derivative_fn=model.derivative_solver,
-                static_feats=static_feats,
-                dynamic_state=current_dynamic,
-                edge_index=edge_index,
-                dt=1.0,
-            )
-
-            predictions.append(F_next)
-            F_prev = F_next
-
-        # Loss
         loss = 0.0
         for t, pred in enumerate(predictions):
-            target = model.process_targets(sequence[t].y)
+            target = sequence[t].y[:, :args.num_dynamic_feats]
             loss += F.mse_loss(pred, target)
+
         loss = loss / len(predictions)
 
         if torch.isnan(loss) or torch.isinf(loss):
@@ -218,6 +195,7 @@ def train_epoch(model, train_loader, optimizer, device, epoch, total_epochs, arg
 
         total_loss += loss.item()
         n_batches += 1
+
         pbar.set_postfix({'loss': f"{loss.item():.6f}"})
 
     return {
@@ -228,7 +206,7 @@ def train_epoch(model, train_loader, optimizer, device, epoch, total_epochs, arg
 
 @torch.no_grad()
 def validate_epoch(model, val_loader, device, args):
-    """Validate one epoch (always pure rollout, TF=0)."""
+    """Validate one epoch (always autoregressive, TF=0)."""
     model.eval()
 
     total_loss = 0.0
@@ -238,44 +216,20 @@ def validate_epoch(model, val_loader, device, args):
         if isinstance(sequence, list) and len(sequence) > 0 and isinstance(sequence[0], list):
             sequence = sequence[0]
 
+        sequence = [d.to(device) for d in sequence]
+
         for data in sequence:
-            for key, value in data.items():
-                if torch.is_tensor(value):
-                    data[key] = value.to(device)
             if not hasattr(data, 'pos') or data.pos is None:
                 data.pos = data.x[:, :2]
 
-        # Pure autoregressive (no teacher forcing)
-        predictions = []
-        F_prev = None
-
-        for i, data in enumerate(sequence):
-            x = data.x
-            edge_index = data.edge_index
-            static_feats = x[:, :model.num_static_feats]
-
-            if i == 0:
-                current_dynamic = x[:, model.num_static_feats:]
-            else:
-                current_dynamic = F_prev
-
-            F_next = model.integrator(
-                derivative_fn=model.derivative_solver,
-                static_feats=static_feats,
-                dynamic_state=current_dynamic,
-                edge_index=edge_index,
-                dt=1.0,
-            )
-
-            predictions.append(F_next)
-            F_prev = F_next
+        predictions = model(sequence, dt=1.0)
 
         loss = 0.0
         for t, pred in enumerate(predictions):
-            target = model.process_targets(sequence[t].y)
+            target = sequence[t].y[:, :args.num_dynamic_feats]
             loss += F.mse_loss(pred, target)
-        loss = loss / len(predictions)
 
+        loss = loss / len(predictions)
         total_loss += loss.item()
         n_batches += 1
 
@@ -329,12 +283,17 @@ def main():
     parser.add_argument("--diffusion_type", type=str, default="fd",
                         choices=["fd", "mls", "none"])
 
-    # Differentiator (SPADE)
-    parser.add_argument("--spade_heads", type=int, default=2)
-    parser.add_argument("--spade_dropout", type=float, default=0.1)
-    parser.add_argument("--zero_init", action="store_true", default=True)
+    # Fusion (concat+MLP)
+    parser.add_argument("--fusion_hidden_dim", type=int, default=128,
+                        help="Hidden dimension for PhysicsFusionMLP")
+    parser.add_argument("--zero_init", action="store_true", default=False,
+                        help="Zero-init fusion MLP output (NOT recommended)")
     parser.add_argument("--use_film", action="store_true", default=True)
     parser.add_argument("--no_film", dest="use_film", action="store_false")
+
+    # Legacy SPADE args (accepted but ignored)
+    parser.add_argument("--spade_heads", type=int, default=2)
+    parser.add_argument("--spade_dropout", type=float, default=0.1)
 
     # Scheduled Sampling
     parser.add_argument("--ss_schedule", type=str, default="linear",
@@ -366,7 +325,7 @@ def main():
         device = torch.device(args.device)
 
     print("\n" + "=" * 70)
-    print("G-PARCv2 BURGERS TRAINING")
+    print("G-PARCv2 BURGERS TRAINING — CONCAT+MLP FUSION")
     print("=" * 70)
     print(f"Device: {device}")
     print(f"Output: {output_dir}")
@@ -374,6 +333,7 @@ def main():
           f"({args.ss_initial_ratio} → {args.ss_final_ratio})")
     print(f"Diffusion: {args.diffusion_type}")
     print(f"FiLM on Re: {args.use_film}")
+    print(f"Fusion: concat+MLP (hidden={args.fusion_hidden_dim})")
     print("=" * 70)
 
     # Dataset
@@ -406,10 +366,6 @@ def main():
     if not hasattr(sample_data, 'pos') or sample_data.pos is None:
         sample_data.pos = sample_data.x[:, :2]
 
-    print(f"  Sample: x={sample_data.x.shape}, y={sample_data.y.shape}, "
-          f"edges={sample_data.edge_index.shape}")
-    print(f"  Re (sample): {sample_data.x[0, 2].item():.4f}")
-
     # Create model
     print("\nCreating model...")
     model = create_model(args, sample_data).to(device)
@@ -417,38 +373,33 @@ def main():
 
     # Optimizer + scheduler
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    scheduler = CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
-    )
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
 
-    # Resume
     start_epoch = 0
     best_val_loss = float('inf')
 
-    if args.resume and Path(args.resume).exists():
+    if args.resume:
         print(f"\nResuming from {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt['model_state_dict'], strict=False)
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
 
         if args.fresh_scheduler:
             start_epoch = 0
+            print(f"  Fresh optimizer + scheduler (lr={args.lr})")
             optimizer = AdamW(model.parameters(), lr=args.lr)
-            scheduler = CosineAnnealingLR(
-                optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
-            )
-            print(f"  Fresh optimizer + scheduler")
+            scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
         else:
-            start_epoch = ckpt.get('epoch', 0) + 1
-            if 'optimizer_state_dict' in ckpt:
-                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-            if ckpt.get('scheduler_state_dict'):
-                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            start_epoch = checkpoint.get('epoch', 0) + 1
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if checkpoint.get('scheduler_state_dict'):
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
-        best_val_loss = ckpt.get('metrics', {}).get('val_loss', float('inf'))
-        print(f"  Resuming from epoch {start_epoch}, best_val={best_val_loss:.6f}")
+        best_val_loss = checkpoint.get('metrics', {}).get('val_loss', float('inf'))
+        print(f"  Resuming from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
 
     # Save config
     config = vars(args)
+    config['fusion_type'] = 'concat_mlp'
     with open(output_dir / "config.json", 'w') as f:
         json.dump(config, f, indent=2)
 
@@ -460,9 +411,9 @@ def main():
     }
 
     for epoch in range(start_epoch, args.epochs):
-        print(f"\n{'=' * 70}")
-        print(f"EPOCH {epoch + 1}/{args.epochs}")
-        print(f"{'=' * 70}")
+        print(f"\n{'='*70}")
+        print(f"EPOCH {epoch+1}/{args.epochs}")
+        print(f"{'='*70}")
 
         train_metrics = train_epoch(
             model, train_loader, optimizer, device,
@@ -479,26 +430,20 @@ def main():
 
         history['train_loss'].append(train_metrics['loss'])
         history['val_loss'].append(val_metrics['loss'])
-        history['teacher_forcing_ratio'].append(
-            train_metrics['teacher_forcing_ratio']
-        )
+        history['teacher_forcing_ratio'].append(train_metrics['teacher_forcing_ratio'])
 
-        # Save best
         if val_metrics['loss'] < best_val_loss:
             best_val_loss = val_metrics['loss']
             save_checkpoint(
                 model, optimizer, scheduler, epoch,
-                {'val_loss': best_val_loss,
-                 'tf': train_metrics['teacher_forcing_ratio']},
+                {'val_loss': best_val_loss},
                 output_dir / "best_model.pth",
             )
             print(f"✓ Saved best model (val_loss: {best_val_loss:.6f})")
 
-        # Save latest
         save_checkpoint(
             model, optimizer, scheduler, epoch,
-            {'val_loss': val_metrics['loss'],
-             'tf': train_metrics['teacher_forcing_ratio']},
+            {'val_loss': val_metrics['loss']},
             output_dir / "latest_model.pth",
         )
 

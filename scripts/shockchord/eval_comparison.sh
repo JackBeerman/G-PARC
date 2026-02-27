@@ -5,7 +5,7 @@
 #SBATCH -e shock_compare.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
-#SBATCH -t 00:30:00
+#SBATCH -t 00:10:00
 #SBATCH -c 4
 #SBATCH --mem=40G
 
@@ -32,6 +32,7 @@ GPARCV1_CKPT="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.
 GPARCV2_CKPT="/scratch/jtb3sud/shocktube_v2_training/nospadeFAST/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/shocktube/run_101_300/best_model.pth"
 MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/shocktube/run1/best_model.pt"
+GSAGE_CKPT="/scratch/jtb3sud/graphsage/shocktube/best_model.pth"
 
 # ============================================================
 # CONFIG
@@ -70,6 +71,13 @@ if [ -f "$MGNET_CKPT" ]; then
     echo "  MeshGraphNet: $MGNET_CKPT"
 else
     echo "  MeshGraphNet: NOT FOUND"
+fi
+
+if [ -f "$GSAGE_CKPT" ]; then
+    MODELS="$MODELS gsage:$GSAGE_CKPT"
+    echo "  gsage: $GSAGE_CKPT"
+else
+    echo "  gsage: NOT FOUND"
 fi
 
 if [ -z "$MODELS" ]; then

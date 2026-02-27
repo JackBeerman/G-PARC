@@ -33,12 +33,13 @@ GPARCV1_CKPT="${BASE_DATA}/shock_tube_20250927_104720_run_mod10_750/shock_tube_b
 GPARCV2_CKPT="/scratch/jtb3sud/shocktube_v2_training/nospadeFAST/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/shocktube/run_101_300/best_model.pth"
 MGNET_CKPT="/scratch/jtb3sud/meshgraphnet/shocktube/run1/best_model.pt"
+GSAGE_CKPT="/scratch/jtb3sud/graphsage/shocktube/best_model.pth"
 
 # ============================================================
 # BUILD MODEL LIST (skip missing)
 # ============================================================
 MODELS=""
-for name_ckpt in "gparcv1:$GPARCV1_CKPT" "gparcv2:$GPARCV2_CKPT" "mgkan:$MGKAN_CKPT" "mgnet:$MGNET_CKPT"; do
+for name_ckpt in "gparcv1:$GPARCV1_CKPT" "gparcv2:$GPARCV2_CKPT" "mgkan:$MGKAN_CKPT" "mgnet:$MGNET_CKPT" "gsage:$GSAGE_CKPT"; do
     mtype="${name_ckpt%%:*}"
     mpath="${name_ckpt#*:}"
     if [ -f "$mpath" ]; then

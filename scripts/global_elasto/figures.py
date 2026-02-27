@@ -137,7 +137,7 @@ def load_gparcv2(checkpoint_path, norm_stats, sample_data, device):
     )
 
     feature_extractor = GraphConvFeatureExtractorV2(
-        in_channels=sf+df,
+        in_channels=sf,
         hidden_channels=cfg.get('hidden_channels', 128),
         out_channels=foc,
         num_layers=cfg.get('num_layers', 4),
@@ -289,6 +289,13 @@ def load_meshgraphkan(checkpoint_path, device):
     return model
 
 
+def load_graphsage(checkpoint_path, device):
+    """Load GraphSAGE elastoplastic model."""
+    from models.graphsage import load_model as load_gsage
+    model = load_gsage('elasto', checkpoint_path, device=device)
+    return model
+
+
 # ============================================================
 # ROLLOUT
 # ============================================================
@@ -414,6 +421,36 @@ def rollout_mgkan(model, simulation, num_steps, device):
             cumulative_disps.append(current_dynamic.cpu().numpy())
 
     print(f"    MGKAN done ({time.time()-t0:.1f}s)")
+    return cumulative_disps
+
+
+def rollout_graphsage(model, simulation, num_steps, device):
+    """Run GraphSAGE rollout."""
+    from models.graphsage import compute_edge_attr
+
+    first = simulation[0]
+    sf = model.num_static_feats
+    df = model.num_dynamic_feats
+    static = first.x[:, :sf].to(device)
+    current_dynamic = first.x[:, sf:sf + df].clone().to(device)
+    edge_index = first.edge_index.to(device)
+
+    pos = first.pos.to(device) if hasattr(first, 'pos') and first.pos is not None else static
+    edge_feat = compute_edge_attr(pos, edge_index)
+
+    cumulative_disps = [current_dynamic.cpu().numpy()]
+
+    t0 = time.time()
+    with torch.no_grad():
+        for t in range(num_steps):
+            if t % 5 == 0:
+                print(f"    GraphSAGE step {t}/{num_steps} ({time.time()-t0:.1f}s)")
+            node_feats = torch.cat([static, current_dynamic], dim=-1)
+            delta = model(node_feats, edge_index, edge_attr=edge_feat)
+            current_dynamic = current_dynamic + delta
+            cumulative_disps.append(current_dynamic.cpu().numpy())
+
+    print(f"    GraphSAGE done ({time.time()-t0:.1f}s)")
     return cumulative_disps
 
 
@@ -635,7 +672,7 @@ def main():
                         help="Number of evenly spaced timesteps to show")
     parser.add_argument("--models", type=str, nargs='+',
                         default=['gparcv2'],
-                        help="Models to include: gparcv2 gparcv1 mgn mgkan")
+                        help="Models to include: gparcv2 gparcv1 mgn mgkan graphsage")
 
     parser.add_argument("--test_dir", type=str, default=TEST_DIR)
     parser.add_argument("--norm_stats", type=str, default=NORM_STATS_PATH)
@@ -643,6 +680,7 @@ def main():
     parser.add_argument("--gparcv1_ckpt", type=str, default=None)
     parser.add_argument("--mgn_ckpt", type=str, default=None)
     parser.add_argument("--mgkan_ckpt", type=str, default=None)
+    parser.add_argument("--graphsage_ckpt", type=str, default=None)
     parser.add_argument("--deformed", action='store_true',
                         help="Show deformed configuration (mesh moves with displacement)")
 
@@ -698,16 +736,16 @@ def main():
         gparcv2_model = load_gparcv2(args.gparcv2_ckpt, norm_stats, sample_data, device)
         print("  G-PARCv2 rollout...")
         gparcv2_disps = rollout_gparcv2(gparcv2_model, simulation, rollout_steps, device)
-        model_names.append('G-PARCv2')
-        all_disps['G-PARCv2'] = gparcv2_disps
+        model_names.append('G-PARC with MLS')
+        all_disps['G-PARC with MLS'] = gparcv2_disps
 
     if 'gparcv1' in selected:
         print("\n  Loading G-PARCv1...")
         gparcv1_model = load_gparcv1(args.gparcv1_ckpt, norm_stats, sample_data, device)
         print("  G-PARCv1 rollout...")
         gparcv1_disps = rollout_gparcv1(gparcv1_model, simulation, rollout_steps, device)
-        model_names.append('G-PARCv1')
-        all_disps['G-PARCv1'] = gparcv1_disps
+        model_names.append('G-PARC Baseline')
+        all_disps['G-PARC Baseline'] = gparcv1_disps
 
     if 'mgn' in selected:
         print("\n  Loading MeshGraphNet...")
@@ -725,8 +763,16 @@ def main():
         model_names.append('MeshGraphKAN')
         all_disps['MeshGraphKAN'] = mgkan_disps
 
+    if 'graphsage' in selected:
+        print("\n  Loading GraphSAGE...")
+        gsage_model = load_graphsage(args.graphsage_ckpt, device)
+        print("  GraphSAGE rollout...")
+        gsage_disps = rollout_graphsage(gsage_model, simulation, rollout_steps, device)
+        model_names.append('GraphSAGE')
+        all_disps['GraphSAGE'] = gsage_disps
+
     if len(model_names) == 0:
-        print("ERROR: No valid models selected. Use --models gparcv2 gparcv1 mgn mgkan")
+        print("ERROR: No valid models selected. Use --models gparcv2 gparcv1 mgn mgkan graphsage")
         return
 
     # Extract displacement magnitudes and vectors at selected timesteps (physical units)

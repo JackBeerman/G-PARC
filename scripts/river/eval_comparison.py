@@ -121,8 +121,16 @@ def get_important_mask(simulation, num_static_feats, depth_idx, threshold, extre
     return mask
 
 
-def compute_all_metrics(preds_phys, targs_phys, depth_threshold=0.3):
-    """Compute full metric suite for one model on one simulation."""
+def compute_all_metrics(preds_phys, targs_phys, depth_threshold=0.3, mask=None):
+    """Compute full metric suite for one model on one simulation.
+    
+    If mask is provided, only compute metrics on the masked subset of nodes.
+    """
+    # Apply mask if provided
+    if mask is not None:
+        preds_phys = [p[mask] for p in preds_phys]
+        targs_phys = [t[mask] for t in targs_phys]
+    
     depth_p = np.concatenate([p[:, 0] for p in preds_phys])
     depth_t = np.concatenate([t[:, 0] for t in targs_phys])
     
@@ -365,11 +373,21 @@ def load_model_mgnet(checkpoint_path, device, sf=9, df=4):
     return model
 
 
+def load_model_graphsage(checkpoint_path, device, sf=9, df=4):
+    """Load GraphSAGE river model."""
+    from models.graphsage import load_model as load_gsage
+    
+    model = load_gsage('river', checkpoint_path, device=device,
+                       in_channels=sf + df, out_channels=df)
+    return model
+
+
 MODEL_LOADERS = {
     'gparcv2': load_model_gparcv2,
     'gparcv1': load_model_gparcv1,
     'mgkan': load_model_mgkan,
     'mgnet': load_model_mgnet,
+    'graphsage': load_model_graphsage,
 }
 
 
@@ -491,11 +509,32 @@ def rollout_mgnet(model, simulation, rollout_steps, device):
     return preds
 
 
+def rollout_graphsage(model, simulation, rollout_steps, device):
+    """GraphSAGE: delta-based rollout with edge gating."""
+    sf = model.num_static_feats
+    df = model.num_dynamic_feats
+    
+    first = simulation[0]
+    static = first.x[:, :sf]
+    current = first.x[:, sf:sf + df].clone()
+    edge_index = first.edge_index
+    ef = model.compute_edge_features(first)
+    
+    preds = []
+    for step in range(rollout_steps):
+        nf = torch.cat([static, current], dim=-1)
+        delta = model(nf, edge_index, edge_attr=ef)
+        current = (current + delta).detach()
+        preds.append(current.cpu().numpy())
+    return preds
+
+
 ROLLOUT_FNS = {
     'gparcv2': rollout_gparcv2,
     'gparcv1': rollout_gparcv1,
     'mgkan': rollout_mgkan,
     'mgnet': rollout_mgnet,
+    'graphsage': rollout_graphsage,
 }
 
 
@@ -508,13 +547,15 @@ MODEL_COLORS = {
     'gparcv1': '#ff7f0e',
     'mgkan': '#2ca02c',
     'mgnet': '#d62728',
+    'graphsage': '#9467bd',
 }
 
 MODEL_LABELS = {
-    'gparcv2': 'G-PARCv2',
-    'gparcv1': 'G-PARCv1',
+    'gparcv2': 'G-PARC with MLS',
+    'gparcv1': 'G-PARC Baseline',
     'mgkan': 'MeshGraphKAN',
     'mgnet': 'MeshGraphNet',
+    'graphsage': 'GraphSAGE',
 }
 
 
@@ -597,7 +638,7 @@ def plot_timeseries_comparison(all_preds, all_targs, sim_name, output_dir,
     plt.close(fig)
 
 
-def plot_comparison_table(all_metrics, output_dir):
+def plot_comparison_table(all_metrics, output_dir, suffix=''):
     """Bar chart comparing key metrics across models."""
     model_names = list(all_metrics.keys())
     n = len(model_names)
@@ -627,13 +668,15 @@ def plot_comparison_table(all_metrics, output_dir):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
                     f'{v:.3f}', ha='center', va='bottom', fontsize=9)
     
-    plt.suptitle('Model Comparison — Aggregate Metrics', fontsize=14, fontweight='bold')
+    title_suffix = f' ({suffix})' if suffix else ''
+    plt.suptitle(f'Model Comparison — Aggregate Metrics{title_suffix}', fontsize=14, fontweight='bold')
     plt.tight_layout()
-    fig.savefig(output_dir / 'comparison_metrics.png', dpi=150, bbox_inches='tight')
+    fname = f'comparison_metrics{"_" + suffix.lower().replace(" ", "_") if suffix else ""}.png'
+    fig.savefig(output_dir / fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
-def plot_nse_per_sim(all_results, output_dir):
+def plot_nse_per_sim(all_results, output_dir, suffix=''):
     """Per-simulation NSE comparison across models."""
     model_names = list(all_results.keys())
     # Use union of all sim names, sorted
@@ -658,13 +701,15 @@ def plot_nse_per_sim(all_results, output_dir):
     ax.set_xticklabels([s.replace('simulation_', 's') for s in sim_names],
                         fontsize=8, rotation=45, ha='right')
     ax.set_ylabel('Depth NSE', fontsize=11)
-    ax.set_title('Per-Simulation Depth NSE', fontsize=13)
+    title_suffix = f' ({suffix})' if suffix else ''
+    ax.set_title(f'Per-Simulation Depth NSE{title_suffix}', fontsize=13)
     ax.legend(fontsize=10)
     ax.grid(alpha=0.3, axis='y')
     ax.axhline(0, color='red', ls='--', alpha=0.3)
     
     plt.tight_layout()
-    fig.savefig(output_dir / 'nse_per_simulation.png', dpi=150, bbox_inches='tight')
+    fname = f'nse_per_simulation{"_" + suffix.lower().replace(" ", "_") if suffix else ""}.png'
+    fig.savefig(output_dir / fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -764,8 +809,12 @@ def main():
     # Structure: per_sim_results[model_name][sim_name] = metrics dict
     # per_sim_preds[model_name][sim_name] = list of [N, D] arrays
     per_sim_results = {m: {} for m in models}
+    per_sim_results_important = {m: {} for m in models}
     per_sim_preds = {m: {} for m in models}
     per_sim_targs = {}
+    
+    # Track important node statistics
+    node_stats = []  # list of dicts per simulation
     
     for sim_idx, (sim_name, sim) in enumerate(test_sims):
         print(f"\n{'─' * 50}")
@@ -793,6 +842,20 @@ def main():
         
         # Important mask
         imp_mask = get_important_mask(sim_gpu, sf, 0, args.depth_threshold, extrema)
+        n_total = len(imp_mask)
+        n_important = int(imp_mask.sum())
+        n_non_important = n_total - n_important
+        pct_important = 100.0 * n_important / n_total if n_total > 0 else 0.0
+        
+        node_stats.append({
+            'sim_name': sim_name,
+            'n_total': n_total,
+            'n_important': n_important,
+            'n_non_important': n_non_important,
+            'pct_important': pct_important,
+        })
+        print(f"  Nodes: {n_total} total, {n_important} important ({pct_important:.1f}%), "
+              f"{n_non_important} non-important ({100-pct_important:.1f}%)")
         
         for model_name, model in models.items():
             try:
@@ -803,8 +866,14 @@ def main():
                 preds_phys = [denormalize_all(p, extrema) for p in preds_raw]
                 per_sim_preds[model_name][sim_name] = preds_phys
                 
-                # Metrics
+                # All-node metrics
                 metrics = compute_all_metrics(preds_phys, targs_phys, args.depth_threshold)
+                
+                # Important-node metrics
+                metrics_imp = {}
+                if imp_mask.any():
+                    metrics_imp = compute_all_metrics(
+                        preds_phys, targs_phys, args.depth_threshold, mask=imp_mask)
                 
                 # Segmented metrics
                 if segments:
@@ -812,13 +881,16 @@ def main():
                         preds_phys, targs_phys, segments, imp_mask, args.depth_threshold)
                 
                 per_sim_results[model_name][sim_name] = metrics
+                per_sim_results_important[model_name][sim_name] = metrics_imp
                 
+                imp_nse_str = f"  imp_NSE={metrics_imp.get('depth_nse', float('nan')):.4f}" if metrics_imp else ""
                 print(f"  {MODEL_LABELS.get(model_name, model_name):15s} — "
                       f"NSE={metrics['depth_nse']:.4f}  "
                       f"RMSE={metrics['depth_rmse']:.4f}  "
                       f"RRMSE={metrics['rrmse']:.4f}  "
                       f"CSI={metrics['depth_csi']:.3f}  "
-                      f"MB%={metrics['mass_balance_pct']:.2f}")
+                      f"MB%={metrics['mass_balance_pct']:.2f}"
+                      f"{imp_nse_str}")
             
             except Exception as e:
                 print(f"  ❌ {model_name} failed: {e}")
@@ -837,9 +909,28 @@ def main():
                         var_idx=vi, var_name=vn, var_unit=vu,
                         important_mask=imp_mask)
     
-    # ---- Aggregate metrics ----
+    # ---- Node statistics summary ----
     print(f"\n{'=' * 70}")
-    print("AGGREGATE RESULTS")
+    print("NODE STATISTICS")
+    print(f"{'=' * 70}")
+    
+    pct_values = [ns['pct_important'] for ns in node_stats]
+    median_pct = float(np.median(pct_values))
+    mean_pct = float(np.mean(pct_values))
+    min_pct = float(np.min(pct_values))
+    max_pct = float(np.max(pct_values))
+    
+    print(f"  Important nodes (depth > {args.depth_threshold}m at any timestep):")
+    print(f"    Median: {median_pct:.1f}% important / {100-median_pct:.1f}% non-important")
+    print(f"    Mean:   {mean_pct:.1f}% important / {100-mean_pct:.1f}% non-important")
+    print(f"    Range:  {min_pct:.1f}% – {max_pct:.1f}%")
+    print(f"    Per-sim breakdown:")
+    for ns in node_stats:
+        print(f"      {ns['sim_name']}: {ns['n_important']}/{ns['n_total']} = {ns['pct_important']:.1f}%")
+    
+    # ---- Aggregate metrics (All Nodes) ----
+    print(f"\n{'=' * 70}")
+    print("AGGREGATE RESULTS — ALL NODES")
     print(f"{'=' * 70}")
     
     agg_metrics = {}
@@ -866,10 +957,41 @@ def main():
               f"{agg.get('depth_csi', 0):>8.3f} "
               f"{agg.get('mass_balance_pct', np.nan):>8.2f}")
     
+    # ---- Aggregate metrics (Important Nodes) ----
+    print(f"\n{'=' * 70}")
+    print("AGGREGATE RESULTS — IMPORTANT NODES ONLY")
+    print(f"{'=' * 70}")
+    
+    agg_metrics_imp = {}
+    for model_name in models:
+        sim_metrics = [v for v in per_sim_results_important[model_name].values() if v]
+        if not sim_metrics:
+            continue
+        
+        agg = {}
+        for key in ['rmse', 'rrmse', 'depth_rmse', 'depth_nse', 'depth_csi', 'mass_balance_pct']:
+            vals = [m[key] for m in sim_metrics if not np.isnan(m.get(key, np.nan))]
+            agg[key] = float(np.mean(vals)) if vals else np.nan
+        
+        agg_metrics_imp[model_name] = agg
+    
+    print(f"\n{'Model':<18s} {'NSE':>8s} {'RMSE':>10s} {'RRMSE':>8s} {'CSI':>8s} {'MB%':>8s}")
+    print("─" * 64)
+    for model_name, agg in agg_metrics_imp.items():
+        label = MODEL_LABELS.get(model_name, model_name)
+        print(f"{label:<18s} {agg.get('depth_nse', 0):>8.4f} "
+              f"{agg.get('depth_rmse', 0):>10.4f} "
+              f"{agg.get('rrmse', 0):>8.4f} "
+              f"{agg.get('depth_csi', 0):>8.3f} "
+              f"{agg.get('mass_balance_pct', np.nan):>8.2f}")
+    
     # Plots
     if len(agg_metrics) > 1:
-        plot_comparison_table(agg_metrics, output_dir)
-        plot_nse_per_sim(per_sim_results, output_dir)
+        plot_comparison_table(agg_metrics, output_dir, suffix='All Nodes')
+        plot_nse_per_sim(per_sim_results, output_dir, suffix='All Nodes')
+    if len(agg_metrics_imp) > 1:
+        plot_comparison_table(agg_metrics_imp, output_dir, suffix='Important Nodes')
+        plot_nse_per_sim(per_sim_results_important, output_dir, suffix='Important Nodes')
     
     # ---- Segment table ----
     if segments:
@@ -950,8 +1072,18 @@ def main():
     
     # Save JSON
     summary = {
-        'aggregate': {k: v for k, v in agg_metrics.items()},
-        'per_simulation': {m: {s: v for s, v in per_sim_results[m].items()} for m in models},
+        'aggregate_all_nodes': {k: v for k, v in agg_metrics.items()},
+        'aggregate_important_nodes': {k: v for k, v in agg_metrics_imp.items()},
+        'node_statistics': {
+            'median_pct_important': median_pct,
+            'mean_pct_important': mean_pct,
+            'min_pct_important': min_pct,
+            'max_pct_important': max_pct,
+            'per_simulation': node_stats,
+        },
+        'per_simulation_all_nodes': {m: {s: v for s, v in per_sim_results[m].items()} for m in models},
+        'per_simulation_important_nodes': {
+            m: {s: v for s, v in per_sim_results_important[m].items() if v} for m in models},
         'models': {m: str(model_specs[m]) for m in models},
     }
     

@@ -5,7 +5,7 @@
 #SBATCH -e elasto_figures.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu
-#SBATCH -t 00:30:00
+#SBATCH -t 00:05:00
 #SBATCH -c 4
 #SBATCH --mem=64G
 
@@ -29,13 +29,14 @@ NORM_STATS="$DATA_ROOT/normalization_stats.json"
 OUTPUT_DIR="/scratch/jtb3sud/elasto_comparison/paper_figures"
 
 # Model checkpoints
-GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/elasto/best_model.pth"
+GPARCV2_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
 GPARCV1_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/elasto/best_model.pth"
 MGN_CKPT="/scratch/jtb3sud/meshgraphnet/elasto/run1/best_model.pt"
+GSAGE_CKPT="/scratch/jtb3sud/graphsage/elasto/best_model.pth"
 
 # Which models to include (space-separated: gparcv2 gparcv1 mgn mgkan)
-MODELS="gparcv2 gparcv1 mgkan mgn"
+MODELS="gparcv2 gparcv1 mgkan mgn graphsage"
 
 # Simulation index to visualize (run multiple times with different indices)
 SIM_INDEX=0
@@ -64,6 +65,7 @@ apptainer run --nv "$CONTAINER" figures.py \
     --gparcv1_ckpt "$GPARCV1_CKPT" \
     --mgkan_ckpt "$MGKAN_CKPT" \
     --mgn_ckpt "$MGN_CKPT" \
+    --graphsage_ckpt "$GSAGE_CKPT" \
     --sim_index "$SIM_INDEX" \
     --num_timesteps "$NUM_TIMESTEPS" \
     --dpi 300 \
