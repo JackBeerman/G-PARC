@@ -45,7 +45,7 @@ echo "================================================================"
 
 mkdir -p "$OUTPUT_DIR"
 
-apptainer run --nv "$CONTAINER" python "$SCRIPT" \
+apptainer run --nv "$CONTAINER" compare_river_gif.py \
     --test_dir "$RV_TEST_DIR" \
     --hec_ras_dir "$RV_HEC_RAS_DIR" \
     --extrema "$RV_EXTREMA" \

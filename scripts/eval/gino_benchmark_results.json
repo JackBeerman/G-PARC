@@ -1,0 +1,206 @@
+[
+  {
+    "model": "GNO",
+    "dataset": "Shock Tube",
+    "params": 248644,
+    "size_mb": 0.99,
+    "peak_gpu_mb": 346.8,
+    "status": "OK",
+    "breakdown": {
+      "lifting": {
+        "params": 9152,
+        "pct": 3.7
+      },
+      "gno_layers": {
+        "params": 230656,
+        "pct": 92.8
+      },
+      "projection": {
+        "params": 8836,
+        "pct": 3.6
+      }
+    },
+    "step_ms": 2414.52,
+    "rollout_steps": 42,
+    "rollout_s": 101.41,
+    "n_nodes": 4096,
+    "n_edges": 16128,
+    "in_channels": 6,
+    "out_channels": 4,
+    "node_steps_per_s": 1696.0
+  },
+  {
+    "model": "GINO",
+    "dataset": "Shock Tube",
+    "params": 228506,
+    "size_mb": 1.5,
+    "peak_gpu_mb": 93.6,
+    "status": "OK",
+    "breakdown": {
+      "gno_in": {
+        "params": 34486,
+        "pct": 15.1
+      },
+      "lifting": {
+        "params": 752,
+        "pct": 0.3
+      },
+      "fno_blocks": {
+        "params": 149728,
+        "pct": 65.5
+      },
+      "gno_out": {
+        "params": 42192,
+        "pct": 18.5
+      },
+      "projection": {
+        "params": 1348,
+        "pct": 0.6
+      }
+    },
+    "step_ms": 770.37,
+    "rollout_steps": 42,
+    "rollout_s": 32.355,
+    "n_nodes": 4096,
+    "n_edges": 16128,
+    "in_channels": 6,
+    "out_channels": 4,
+    "node_steps_per_s": 5317.0
+  },
+  {
+    "model": "GNO",
+    "dataset": "Elastoplastic",
+    "params": 248130,
+    "size_mb": 0.99,
+    "peak_gpu_mb": 8264.6,
+    "status": "OK",
+    "breakdown": {
+      "lifting": {
+        "params": 8896,
+        "pct": 3.6
+      },
+      "gno_layers": {
+        "params": 230656,
+        "pct": 93.0
+      },
+      "projection": {
+        "params": 8578,
+        "pct": 3.5
+      }
+    },
+    "step_ms": 14920.97,
+    "rollout_steps": 39,
+    "rollout_s": 581.918,
+    "n_nodes": 25152,
+    "n_edges": 149166,
+    "in_channels": 4,
+    "out_channels": 2,
+    "node_steps_per_s": 1686.0
+  },
+  {
+    "model": "GINO",
+    "dataset": "Elastoplastic",
+    "params": 227990,
+    "size_mb": 1.5,
+    "peak_gpu_mb": 347.2,
+    "status": "OK",
+    "breakdown": {
+      "gno_in": {
+        "params": 34164,
+        "pct": 15.0
+      },
+      "lifting": {
+        "params": 688,
+        "pct": 0.3
+      },
+      "fno_blocks": {
+        "params": 149728,
+        "pct": 65.7
+      },
+      "gno_out": {
+        "params": 42192,
+        "pct": 18.5
+      },
+      "projection": {
+        "params": 1218,
+        "pct": 0.5
+      }
+    },
+    "step_ms": 3773.53,
+    "rollout_steps": 39,
+    "rollout_s": 147.168,
+    "n_nodes": 25152,
+    "n_edges": 149166,
+    "in_channels": 4,
+    "out_channels": 2,
+    "node_steps_per_s": 6665.0
+  },
+  {
+    "model": "GNO",
+    "dataset": "River",
+    "params": 249540,
+    "size_mb": 1.0,
+    "peak_gpu_mb": 777.6,
+    "status": "OK",
+    "breakdown": {
+      "lifting": {
+        "params": 10048,
+        "pct": 4.0
+      },
+      "gno_layers": {
+        "params": 230656,
+        "pct": 92.4
+      },
+      "projection": {
+        "params": 8836,
+        "pct": 3.5
+      }
+    },
+    "step_ms": 2843.73,
+    "rollout_steps": 50,
+    "rollout_s": 142.186,
+    "n_nodes": 4787,
+    "n_edges": 19148,
+    "in_channels": 13,
+    "out_channels": 4,
+    "node_steps_per_s": 1683.0
+  },
+  {
+    "model": "GINO",
+    "dataset": "River",
+    "params": 229857,
+    "size_mb": 1.51,
+    "peak_gpu_mb": 101.1,
+    "status": "OK",
+    "breakdown": {
+      "gno_in": {
+        "params": 35613,
+        "pct": 15.5
+      },
+      "lifting": {
+        "params": 976,
+        "pct": 0.4
+      },
+      "fno_blocks": {
+        "params": 149728,
+        "pct": 65.1
+      },
+      "gno_out": {
+        "params": 42192,
+        "pct": 18.4
+      },
+      "projection": {
+        "params": 1348,
+        "pct": 0.6
+      }
+    },
+    "step_ms": 851.8,
+    "rollout_steps": 50,
+    "rollout_s": 42.59,
+    "n_nodes": 4787,
+    "n_edges": 19148,
+    "in_channels": 13,
+    "out_channels": 4,
+    "node_steps_per_s": 5620.0
+  }
+]

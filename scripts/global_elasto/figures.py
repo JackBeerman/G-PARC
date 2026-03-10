@@ -53,6 +53,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# ============================================================
+# Paper-specific label overrides and model filtering
+# ============================================================
+
+# Maps internal model key → display label for paper figures
+PAPER_MODEL_LABELS = {
+    'gparcv2':    'G-PARC',
+    'gparcv1':    'G-PARC (w/o MLS)',
+    'mgkan':      'MeshGraphKAN',
+    'mgn':        'MeshGraphNet',
+    'graphsage':  'GraphSAGE',
+}
+
+# Default model subset for paper figures (GT row is always included)
+DEFAULT_PAPER_MODELS = ['gparcv2', 'gparcv1', 'mgkan']
+
+
 def load_norm_stats(path):
     """Load normalization statistics."""
     with open(path) as f:
@@ -642,10 +659,7 @@ def create_comparison_figure(
             sm.set_array([])
             cbar = fig.colorbar(sm, cax=cbar_ax)
             cbar.ax.tick_params(labelsize=6)
-
-            # Label on middle row only
-            if row == n_rows // 2:
-                cbar.set_label('||U|| (mm)', fontsize=8, labelpad=3)
+            cbar.set_label('||U|| (mm)', fontsize=8, labelpad=3)
 
         # Title
         fig.text(0.5, 0.97,
@@ -683,6 +697,10 @@ def main():
     parser.add_argument("--graphsage_ckpt", type=str, default=None)
     parser.add_argument("--deformed", action='store_true',
                         help="Show deformed configuration (mesh moves with displacement)")
+    parser.add_argument("--paper_models", type=str, nargs='+', default=None,
+                        help="Which models to include in figures and in what order "
+                             "(default: gparcv2 gparcv1 mgkan). "
+                             "Only models present in --models will appear.")
 
     args = parser.parse_args()
 
@@ -725,54 +743,55 @@ def main():
     sample_data.pos = sample_data.x[:, :2]
     rollout_steps = total_steps
 
-    model_names = []
-    all_disps = {}
-
+    # Determine which models to show (and in what order)
+    paper_models = args.paper_models if args.paper_models else DEFAULT_PAPER_MODELS
     selected = [m.lower() for m in args.models]
-    print(f"\nSelected models: {selected}")
+    # Filter paper_models to only those actually requested in --models
+    model_order = [m for m in paper_models if m in selected]
+    skipped = [m for m in paper_models if m not in selected]
+    if skipped:
+        print(f"⚠ Requested in --paper_models but not in --models: {skipped}")
+    print(f"Figure model order: {[PAPER_MODEL_LABELS.get(m, m) for m in model_order]}")
 
-    if 'gparcv2' in selected:
-        print("\n  Loading G-PARCv2...")
-        gparcv2_model = load_gparcv2(args.gparcv2_ckpt, norm_stats, sample_data, device)
-        print("  G-PARCv2 rollout...")
-        gparcv2_disps = rollout_gparcv2(gparcv2_model, simulation, rollout_steps, device)
-        model_names.append('G-PARC with MLS')
-        all_disps['G-PARC with MLS'] = gparcv2_disps
+    # Model key → (loader_fn, ckpt_path, rollout_fn)
+    MODEL_REGISTRY = {
+        'gparcv2':   (load_gparcv2,      args.gparcv2_ckpt,   rollout_gparcv2,    True),
+        'gparcv1':   (load_gparcv1,      args.gparcv1_ckpt,   rollout_gparcv1,    True),
+        'mgn':       (load_meshgraphnet, args.mgn_ckpt,       rollout_mgn,        False),
+        'mgkan':     (load_meshgraphkan, args.mgkan_ckpt,     rollout_mgkan,      False),
+        'graphsage': (load_graphsage,    args.graphsage_ckpt, rollout_graphsage,  False),
+    }
 
-    if 'gparcv1' in selected:
-        print("\n  Loading G-PARCv1...")
-        gparcv1_model = load_gparcv1(args.gparcv1_ckpt, norm_stats, sample_data, device)
-        print("  G-PARCv1 rollout...")
-        gparcv1_disps = rollout_gparcv1(gparcv1_model, simulation, rollout_steps, device)
-        model_names.append('G-PARC Baseline')
-        all_disps['G-PARC Baseline'] = gparcv1_disps
+    model_names = []   # display names in figure order
+    all_disps = {}     # display_name → rollout displacements
 
-    if 'mgn' in selected:
-        print("\n  Loading MeshGraphNet...")
-        mgn_model = load_meshgraphnet(args.mgn_ckpt, device)
-        print("  MeshGraphNet rollout...")
-        mgn_disps = rollout_mgn(mgn_model, simulation, rollout_steps, device)
-        model_names.append('MeshGraphNet')
-        all_disps['MeshGraphNet'] = mgn_disps
+    for mkey in model_order:
+        if mkey not in MODEL_REGISTRY:
+            print(f"  ⚠ Unknown model key: {mkey}")
+            continue
+        loader, ckpt_path, rollout_fn, needs_norm = MODEL_REGISTRY[mkey]
+        if ckpt_path is None:
+            print(f"  ⚠ No checkpoint for {mkey}, skipping")
+            continue
 
-    if 'mgkan' in selected:
-        print("\n  Loading MeshGraphKAN...")
-        mgkan_model = load_meshgraphkan(args.mgkan_ckpt, device)
-        print("  MeshGraphKAN rollout...")
-        mgkan_disps = rollout_mgkan(mgkan_model, simulation, rollout_steps, device)
-        model_names.append('MeshGraphKAN')
-        all_disps['MeshGraphKAN'] = mgkan_disps
-
-    if 'graphsage' in selected:
-        print("\n  Loading GraphSAGE...")
-        gsage_model = load_graphsage(args.graphsage_ckpt, device)
-        print("  GraphSAGE rollout...")
-        gsage_disps = rollout_graphsage(gsage_model, simulation, rollout_steps, device)
-        model_names.append('GraphSAGE')
-        all_disps['GraphSAGE'] = gsage_disps
+        display_name = PAPER_MODEL_LABELS.get(mkey, mkey)
+        try:
+            print(f"\n  Loading {display_name}...")
+            if needs_norm:
+                model = loader(ckpt_path, norm_stats, sample_data, device)
+            else:
+                model = loader(ckpt_path, device)
+            print(f"  {display_name} rollout...")
+            disps = rollout_fn(model, simulation, rollout_steps, device)
+            model_names.append(display_name)
+            all_disps[display_name] = disps
+            del model; torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"  ✗ {display_name} failed: {e}")
+            import traceback; traceback.print_exc()
 
     if len(model_names) == 0:
-        print("ERROR: No valid models selected. Use --models gparcv2 gparcv1 mgn mgkan graphsage")
+        print("ERROR: No valid models loaded.")
         return
 
     # Extract displacement magnitudes and vectors at selected timesteps (physical units)

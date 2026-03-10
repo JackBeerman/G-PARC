@@ -6,7 +6,7 @@ Generates publication-quality figures, one per field variable.
 
 Each figure:
     Columns: t_early | t_mid | t_late  (3 timesteps)
-    Rows:    GT | G-PARCv1 | G-PARCv2 | MeshGraphKAN | MeshGraphNet
+    Rows:    GT | G-PARC | G-PARC (w/o MLS) | MeshGraphKAN   [default]
 
 Color range is set from GROUND TRUTH only (global min/max across timesteps).
 Each row gets its own colorbar.
@@ -17,6 +17,9 @@ Usage:
         --models gparcv1:/path gparcv2:/path mgkan:/path mgnet:/path \
         --output_dir /scratch/.../figures \
         --sim_index 0 --rollout_steps 40 --error_fig
+
+    # Override which models appear (and in what order):
+    python paper_figure.py ... --paper_models gparcv2 gparcv1 mgkan mgnet
 """
 
 import argparse, sys, os, json, re
@@ -43,6 +46,23 @@ VAR_LABELS = {
     'x_momentum':   r'$\rho u$',
     'total_energy':  r'$E$',
 }
+
+# ---------------------------------------------------------------------------
+# Paper-specific label overrides
+#   gparcv2 (with MLS)  → "G-PARC"
+#   gparcv1 (baseline)  → "G-PARC (w/o MLS)"
+# ---------------------------------------------------------------------------
+PAPER_MODEL_LABELS = {
+    'gparcv2':    'G-PARC',
+    'gparcv1':    'G-PARC (w/o MLS)',
+    'mgkan':      'MeshGraphKAN',
+    'mgnet':      'MeshGraphNet',
+    'gsage':      'GraphSAGE',
+    'graphsage':  'GraphSAGE',
+}
+
+# Default model subset for paper figures (GT row is always included)
+DEFAULT_PAPER_MODELS = ['gparcv2', 'gparcv1', 'mgkan']
 
 # Denormalization: physical = normalized * (max - min) + min
 # From variable_statistics.json global_statistics
@@ -80,7 +100,7 @@ def format_physical_time(step, delta_t):
 def format_sim_title(data, sim_name):
     """
     Build a title from physical simulation parameters.
-    
+
     Priority: parse from filename (always has physical values),
     then try data attributes as fallback.
     Filename format: p_L_143750_rho_L_0.5625_test_with_pos_normalized
@@ -227,7 +247,10 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
     cbar_norm_w = 0.015
     cbar_gap = 0.008
 
-    row_labels = ['Ground Truth'] + [MODEL_LABELS.get(m, m) for m in model_order]
+    row_labels = ['Ground Truth'] + [
+        PAPER_MODEL_LABELS.get(m, MODEL_LABELS.get(m, m))
+        for m in model_order
+    ]
 
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
@@ -273,16 +296,15 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
         sm.set_array([])
         cbar = fig.colorbar(sm, cax=cbar_ax)
         cbar.ax.tick_params(labelsize=6)
-        # Add variable label with units to colorbar only on the middle row
-        if row == n_rows // 2:
-            cbar.set_label(var_label + ' (' + unit_str + ')', fontsize=7, labelpad=3)
+        cbar.set_label(var_label + ' (' + unit_str + ')', fontsize=7, labelpad=3)
+
     var_label = VAR_LABELS.get(var_name, var_name)
     fig.text(0.5, 0.97, f'{var_label}    {sim_title}',
              fontsize=11, fontweight='bold', ha='center', va='top')
 
     fig.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"  \u2713 {output_path.name}")
+    print(f"  ✓ {output_path.name}")
 
 
 # ===========================================================================
@@ -341,7 +363,7 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
 
     for row, mname in enumerate(model_order):
         preds = model_preds_phys.get(mname, [])
-        label = MODEL_LABELS.get(mname, mname)
+        label = PAPER_MODEL_LABELS.get(mname, MODEL_LABELS.get(mname, mname))
 
         for ti, t in enumerate(timesteps):
             x = x0 + ti * cw
@@ -379,9 +401,7 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
         sm.set_array([])
         cbar = fig.colorbar(sm, cax=cbar_ax)
         cbar.ax.tick_params(labelsize=6)
-        # Add error label with units on middle row
-        if row == n_rows // 2:
-            cbar.set_label(f'|error| ({unit_str})', fontsize=7, labelpad=3)
+        cbar.set_label(f'|error| ({unit_str})', fontsize=7, labelpad=3)
 
     var_label = VAR_LABELS.get(var_name, var_name)
     fig.text(0.5, 0.97, f'Absolute Error: {var_label}    {sim_title}',
@@ -389,7 +409,7 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
 
     fig.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"  \u2713 {output_path.name}")
+    print(f"  ✓ {output_path.name}")
 
 
 # ===========================================================================
@@ -405,6 +425,10 @@ def main():
     parser.add_argument("--rollout_steps", type=int, default=40)
     parser.add_argument("--timesteps", type=int, nargs='+', default=None,
                         help="Specific timesteps (default: 3 evenly spaced)")
+    parser.add_argument("--paper_models", type=str, nargs='+', default=None,
+                        help="Which models to include in figures and in what order "
+                             "(default: gparcv2 gparcv1 mgkan). "
+                             "Only models present in --models will appear.")
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--cmap", type=str, default='RdBu_r')
     parser.add_argument("--device", type=str, default="cuda")
@@ -417,7 +441,14 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
     model_specs = parse_model_specs(args.models)
-    model_order = list(model_specs.keys())
+
+    # Determine which models to show (and in what order)
+    paper_models = args.paper_models if args.paper_models else DEFAULT_PAPER_MODELS
+    model_order = [m for m in paper_models if m in model_specs]
+    skipped = [m for m in paper_models if m not in model_specs]
+    if skipped:
+        print(f"⚠ Requested but not found in --models: {skipped}")
+    print(f"Figure model order: {[PAPER_MODEL_LABELS.get(m, m) for m in model_order]}")
 
     # Load simulation
     test_dir = Path(args.test_dir)
@@ -475,11 +506,13 @@ def main():
     else:
         print(f"  Timesteps: {timesteps}")
 
-    # Load models & rollout
+    # Load models & rollout (only those in model_order)
     model_preds = {}
-    for mtype, mpath in model_specs.items():
+    for mtype in model_order:
+        mpath = model_specs[mtype]
         try:
-            print(f"\n  Loading {MODEL_LABELS.get(mtype, mtype)}...")
+            pname = PAPER_MODEL_LABELS.get(mtype, MODEL_LABELS.get(mtype, mtype))
+            print(f"\n  Loading {pname}...")
             model = LOADERS[mtype](mpath, sample_data, device)
             n_params = sum(p.numel() for p in model.parameters())
             print(f"    {n_params:,} parameters")
@@ -496,11 +529,12 @@ def main():
 
             del model; torch.cuda.empty_cache()
         except Exception as e:
-            print(f"    Failed: {MODEL_LABELS.get(mtype, mtype)}: {e}")
+            pname = PAPER_MODEL_LABELS.get(mtype, MODEL_LABELS.get(mtype, mtype))
+            print(f"    Failed: {pname}: {e}")
             import traceback; traceback.print_exc()
 
-    model_order = [m for m in model_order if m in model_preds]
-    if not model_order:
+    active_models = [m for m in model_order if m in model_preds]
+    if not active_models:
         print("No models loaded!"); return
 
     # Generate one figure per variable
@@ -508,7 +542,7 @@ def main():
     for vi, vn in enumerate(VAR_NAMES):
         for ext in ['png', 'pdf']:
             fpath = output_dir / f'{vn}_{sim_name}.{ext}'
-            make_field_figure(gt_list, model_preds, model_order, timesteps,
+            make_field_figure(gt_list, model_preds, active_models, timesteps,
                               vi, vn, fpath,
                               sim_title=sim_title, dpi=args.dpi, cmap=args.cmap,
                               delta_t=delta_t)
@@ -516,7 +550,7 @@ def main():
         if args.error_fig:
             for ext in ['png', 'pdf']:
                 epath = output_dir / f'{vn}_error_{sim_name}.{ext}'
-                make_error_figure(gt_list, model_preds, model_order, timesteps,
+                make_error_figure(gt_list, model_preds, active_models, timesteps,
                                   vi, vn, epath,
                                   sim_title=sim_title, dpi=args.dpi,
                                   delta_t=delta_t)

@@ -9,16 +9,19 @@ Uses HEC-RAS .hdf mesh files for PolyCollection rendering.
 
 Layout per figure:
     Columns: t_early | t_mid | t_late  (3 timesteps)
-    Rows:    GT | G-PARCv1 | G-PARCv2 | MeshGraphKAN | MeshGraphNet
+    Rows:    GT | G-PARC | G-PARC (w/o MLS) | MeshGraphKAN   [4 rows default]
 
 Usage:
     python paper_figure.py \\
         --test_dir /path/to/test_data \\
-        --models gparcv2:/path gparcv1:/path mgkan:/path mgnet:/path \\
+        --models gparcv2:/path gparcv1:/path mgkan:/path \\
         --hec_ras_dir "/standard/sds_baek_energetic/HEC_RAS (River)" \\
         --output_dir /scratch/.../figures \\
         --extrema_path /path/to/global_y_extrema.pth \\
         --sim_index 0 --rollout_steps 20 --error_fig
+
+    # Override which models appear (and in what order):
+    python paper_figure.py ... --paper_models gparcv2 gparcv1 mgkan mgnet
 """
 
 import argparse, sys, os, json
@@ -58,11 +61,23 @@ VAR_LABELS = {
     'Velocity_Y': r'$V_y$',
 }
 
+# ---------------------------------------------------------------------------
+# Paper-specific label overrides
+#   gparcv2 (with MLS)  → "G-PARC"
+#   gparcv1 (baseline)  → "G-PARC (w/o MLS)"
+# ---------------------------------------------------------------------------
+PAPER_MODEL_LABELS = {
+    'gparcv2':    'G-PARC',
+    'gparcv1':    'G-PARC (w/o MLS)',
+    'mgkan':      'MeshGraphKAN',
+    'mgnet':      'MeshGraphNet',
+    'graphsage':  'GraphSAGE',
+}
+
+# Default model subset for paper figures (GT row is always included)
+DEFAULT_PAPER_MODELS = ['gparcv2', 'gparcv1', 'mgkan']
+
 # Publication-friendly colormaps
-#   Depth:  viridis  — perceptually uniform, prints well
-#   Volume: viridis  — same scale for consistency
-#   Vel_X:  RdBu_r   — diverging for signed velocity
-#   Vel_Y:  RdBu_r   — diverging for signed velocity
 PAPER_CMAPS = ['viridis', 'viridis', 'RdBu_r', 'RdBu_r']
 
 # Physical time per timestep (minutes)
@@ -221,7 +236,11 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
     cw = cell_w / fig_w
     ch = cell_h / fig_h
 
-    row_labels = ['Ground Truth'] + [MODEL_LABELS.get(m, m) for m in model_order]
+    # Use paper labels (fall back to eval_comparison labels)
+    row_labels = ['Ground Truth'] + [
+        PAPER_MODEL_LABELS.get(m, MODEL_LABELS.get(m, m))
+        for m in model_order
+    ]
 
     for row in range(n_rows):
         data_src = gt_list if row == 0 else model_preds.get(model_order[row - 1], [])
@@ -250,16 +269,18 @@ def make_field_figure(gt_list, model_preds, model_order, timesteps,
                 time_str = format_physical_time(t)
                 ax.set_title(f't = {time_str}', fontsize=10, fontweight='bold', pad=4)
 
-    # Colorbar
+    # Per-row colorbars (all share the same GT-derived norm)
     cb_x = x0 + n_times * cw + 0.005
-    cb_y = y_top - n_rows * ch
-    cb_h = n_rows * ch * 0.90
-    cbar_ax = fig.add_axes([cb_x, cb_y, 0.015, cb_h])
     sm = cm.ScalarMappable(norm=norm, cmap=cmap_name)
     sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.ax.tick_params(labelsize=7)
-    cbar.set_label(label, fontsize=9, labelpad=4)
+    for row in range(n_rows):
+        cb_y = y_top - (row + 1) * ch
+        cb_h_row = ch * 0.85
+        cb_y_padded = cb_y + (ch - cb_h_row) * 0.5  # vertically center in row
+        cbar_ax = fig.add_axes([cb_x, cb_y_padded, 0.012, cb_h_row])
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=6)
+        cbar.set_label(label, fontsize=8, labelpad=4)
 
     terrain = 'Iowa River' if 'iw' in sim_name.lower() else 'White River'
     fig.text(0.5, 0.97, f'{VAR_LABELS.get(var_name, var_name)} — {terrain}',
@@ -328,7 +349,7 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
 
     for row, mname in enumerate(model_order):
         preds = model_preds.get(mname, [])
-        label = MODEL_LABELS.get(mname, mname)
+        label = PAPER_MODEL_LABELS.get(mname, MODEL_LABELS.get(mname, mname))
 
         for ti, t in enumerate(timesteps):
             x = x0 + ti * cw
@@ -351,17 +372,19 @@ def make_error_figure(gt_list, model_preds, model_order, timesteps,
                 time_str = format_physical_time(t)
                 ax.set_title(f't = {time_str}', fontsize=10, fontweight='bold', pad=4)
 
-    # Colorbar
+    # Per-row colorbars (all share the same error norm)
     cb_x = x0 + n_times * cw + 0.005
-    cb_y = y_top - n_rows * ch
-    cb_h = n_rows * ch * 0.90
-    cbar_ax = fig.add_axes([cb_x, cb_y, 0.015, cb_h])
+    var_label = VAR_LABELS.get(var_name, var_name)
     sm = cm.ScalarMappable(norm=norm, cmap=cmap_name)
     sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.ax.tick_params(labelsize=7)
-    var_label = VAR_LABELS.get(var_name, var_name)
-    cbar.set_label(f'|Δ{var_label}| ({unit})', fontsize=9, labelpad=4)
+    for row in range(n_rows):
+        cb_y = y_top - (row + 1) * ch
+        cb_h_row = ch * 0.85
+        cb_y_padded = cb_y + (ch - cb_h_row) * 0.5
+        cbar_ax = fig.add_axes([cb_x, cb_y_padded, 0.012, cb_h_row])
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=6)
+        cbar.set_label(f'|Δ{var_label}| ({unit})', fontsize=8, labelpad=4)
 
     terrain = 'Iowa River' if 'iw' in sim_name.lower() else 'White River'
     fig.text(0.5, 0.97, f'Absolute Error: {var_label} — {terrain}',
@@ -394,6 +417,10 @@ def main():
                         help="Specific timesteps (default: 3 evenly spaced)")
     parser.add_argument("--variables", type=int, nargs='+', default=None,
                         help="Variable indices to plot (default: all). 0=Depth, 1=Volume, 2=Vel_X, 3=Vel_Y")
+    parser.add_argument("--paper_models", type=str, nargs='+', default=None,
+                        help="Which models to include in figures and in what order "
+                             "(default: gparcv2 gparcv1 mgkan). "
+                             "Only models present in --models will appear.")
     parser.add_argument("--dt_minutes", type=float, default=20,
                         help="Physical time per timestep in minutes (default: 20)")
     parser.add_argument("--dpi", type=int, default=300)
@@ -411,7 +438,15 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
     model_specs = parse_model_specs(args.models, MODEL_LOADERS)
-    model_order = list(model_specs.keys())
+
+    # Determine which models to show (and in what order)
+    paper_models = args.paper_models if args.paper_models else DEFAULT_PAPER_MODELS
+    # Filter to only those actually provided via --models
+    model_order = [m for m in paper_models if m in model_specs]
+    skipped = [m for m in paper_models if m not in model_specs]
+    if skipped:
+        print(f"⚠ Requested but not found in --models: {skipped}")
+    print(f"Figure model order: {[PAPER_MODEL_LABELS.get(m, m) for m in model_order]}")
 
     # Denormalization extrema
     extrema = None
@@ -486,11 +521,13 @@ def main():
             timesteps = [steps // 6, steps // 2, steps - 1]
         print(f"  Timesteps: {timesteps} (physical: {[format_physical_time(t) for t in timesteps]})")
 
-        # Load models & rollout
+        # Load models & rollout  (only those in model_order)
         model_preds = {}
-        for mtype, mpath in model_specs.items():
+        for mtype in model_order:
+            mpath = model_specs[mtype]
             try:
-                print(f"\n  Loading {MODEL_LABELS.get(mtype, mtype)}...")
+                pname = PAPER_MODEL_LABELS.get(mtype, MODEL_LABELS.get(mtype, mtype))
+                print(f"\n  Loading {pname}...")
                 model = MODEL_LOADERS[mtype](mpath, device, sf=sf, df=df)
                 n_params = sum(p.numel() for p in model.parameters())
                 print(f"    {n_params:,} parameters")
@@ -513,7 +550,8 @@ def main():
 
                 del model; torch.cuda.empty_cache()
             except Exception as e:
-                print(f"    ✗ {MODEL_LABELS.get(mtype, mtype)} failed: {e}")
+                pname = PAPER_MODEL_LABELS.get(mtype, MODEL_LABELS.get(mtype, mtype))
+                print(f"    ✗ {pname} failed: {e}")
                 import traceback; traceback.print_exc()
 
         active_models = [m for m in model_order if m in model_preds]
