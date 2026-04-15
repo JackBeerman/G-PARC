@@ -15,10 +15,10 @@ module load apptainer
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
 BASE_DATA="/standard/sds_baek_energetic/PSAAP - SAGEST/Chord_ShockTube_0.5x0.5mDomain_64x64Cells/different_dt"
-TEST_DIR="${BASE_DATA}/normalized_datasets/train_cases_normalized"
-TRAIN_DIR="${BASE_DATA}/normalized_datasets/test_cases_normalized"
+TEST_DIR="${BASE_DATA}/normalized_datasets/test_cases_normalized"
+TRAIN_DIR="${BASE_DATA}/normalized_datasets/train_cases_normalized"
 CHECKPOINT="/scratch/jtb3sud/shocktube_v2_training/nospadeFAST/best_model.pth"
-OUTPUT_DIR="/scratch/jtb3sud/shocktube_comparison/film_analysis/test"
+OUTPUT_DIR="/scratch/jtb3sud/shocktube_comparison/film_analysis/trainpaper"
 
 mkdir -p "${OUTPUT_DIR}"
 

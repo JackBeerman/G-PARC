@@ -549,6 +549,7 @@ def create_comparison_figure(
     """
     Create publication comparison figure with per-row colorbars.
     Color range from GT global max across ALL timesteps.
+    No top title (caption handled in LaTeX).
     
     If deformed=True, renders on deformed mesh (pos + displacement).
     gt_disp_vectors / model_disp_vectors: dict of [N,2] arrays at each timestep.
@@ -587,25 +588,39 @@ def create_comparison_figure(
         xlim = (pos_phys[:, 0].min() - 1, pos_phys[:, 0].max() + 1)
         ylim = (pos_phys[:, 1].min() - 1, pos_phys[:, 1].max() + 1)
 
-    # Layout with manual axes placement for per-row colorbars
-    cell_w, cell_h = 4.0, 3.2
-    row_label_w = 1.2
+    # ── Font sizes (publication-friendly) ──
+    FONT_TIMESTEP = 18      # column headers: t = ...
+    FONT_ROW_LABEL = 14     # row labels: Ground Truth, G-PARC, ...
+    FONT_CBAR_TICK = 9      # colorbar tick labels
+    FONT_CBAR_LABEL = 13    # colorbar axis label: ||U|| (mm)
+
+    # Layout: size cells to match data aspect ratio so set_aspect('equal')
+    # fills the axes completely (no dead space → colorbar matches plot height)
+    data_w = xlim[1] - xlim[0]
+    data_h = ylim[1] - ylim[0]
+    data_aspect = data_h / data_w  # height / width of the data region
+
+    cell_w = 4.0                          # inches per column
+    cell_h = cell_w * data_aspect         # match data aspect ratio
+    row_gap = 0.6                         # inches of whitespace between rows
+    row_label_w = 1.4
     cbar_w = 0.5
-    header_h = 0.6
+    top_pad = 0.8    # space for column headers on row 0
+    bot_pad = 0.3
 
     fig_w = row_label_w + n_cols * cell_w + cbar_w + 0.3
-    fig_h = header_h + n_rows * cell_h + 0.3
+    fig_h = top_pad + n_rows * cell_h + (n_rows - 1) * row_gap + bot_pad
 
-    config_label = 'Deformed' if deformed else 'Reference'
     suffix = '_deformed' if deformed else ''
 
     for fmt in ['png', 'pdf']:
         fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
 
         x0 = row_label_w / fig_w
-        y_top = 1.0 - header_h / fig_h
+        y_top = 1.0 - top_pad / fig_h
         cw = cell_w / fig_w
         ch = cell_h / fig_h
+        rg = row_gap / fig_h              # row gap in figure-normalized coords
         cbar_norm_w = 0.012
         cbar_gap = 0.008
 
@@ -614,9 +629,11 @@ def create_comparison_figure(
                 emask = erosion_masks.get(t, None) if erosion_masks else None
 
                 x = x0 + col_idx * cw
-                y = y_top - (row + 1) * ch
+                y = y_top - (row + 1) * ch - row * rg
 
-                ax = fig.add_axes([x, y, cw * 0.95, ch * 0.90])
+                ax_w = cw * 0.95
+                ax_h = ch       # full cell height (already matches data aspect)
+                ax = fig.add_axes([x, y, ax_w, ax_h])
 
                 if row == 0:
                     values = gt_disps[col_idx]
@@ -643,28 +660,23 @@ def create_comparison_figure(
                     spine.set_visible(False)
 
                 if row == 0:
-                    ax.set_title(f't = {t}', fontsize=11, fontweight='bold', pad=6)
+                    ax.set_title(f't = {t}', fontsize=FONT_TIMESTEP, fontweight='bold', pad=8)
 
                 if col_idx == 0:
-                    ax.set_ylabel(row_labels[row], fontsize=10, fontweight='bold',
-                                  rotation=90, labelpad=8)
+                    ax.set_ylabel(row_labels[row], fontsize=FONT_ROW_LABEL, fontweight='bold',
+                                  rotation=90, labelpad=10)
 
-            # Per-row colorbar
+            # Per-row colorbar — exactly matches axes height
             cb_x = x0 + n_cols * cw + cbar_gap
-            cb_y = y_top - (row + 1) * ch + ch * 0.05
-            cb_h = ch * 0.80
+            cb_y = y       # same bottom as last column's axes
+            cb_h = ax_h    # same height as axes (= ch)
 
             cbar_ax = fig.add_axes([cb_x, cb_y, cbar_norm_w, cb_h])
             sm = plt.cm.ScalarMappable(cmap=cmap, norm=color_norm)
             sm.set_array([])
             cbar = fig.colorbar(sm, cax=cbar_ax)
-            cbar.ax.tick_params(labelsize=6)
-            cbar.set_label('||U|| (mm)', fontsize=8, labelpad=3)
-
-        # Title
-        fig.text(0.5, 0.97,
-                 f'Displacement Magnitude ({config_label} Config) \u2014 {sim_name}',
-                 fontsize=12, fontweight='bold', ha='center', va='top')
+            cbar.ax.tick_params(labelsize=FONT_CBAR_TICK)
+            cbar.set_label('||U|| (mm)', fontsize=FONT_CBAR_LABEL, labelpad=4)
 
         out_path = Path(output_dir) / f'model_comparison{suffix}_{sim_name}.{fmt}'
         fig.savefig(out_path, dpi=dpi, bbox_inches='tight', facecolor='white')

@@ -478,12 +478,30 @@ def main():
     print(f"  Title: {sim_title}")
 
     # Extract delta_t for physical time labels
-    sim_params = extract_global_params_from_data(sample_data)
-    delta_t = sim_params.get('delta_t', None)
-    if delta_t is not None and delta_t != 0:
-        print(f"  dt = {delta_t} s")
+    #sim_params = extract_global_params_from_data(sample_data)
+    #delta_t = sim_params.get('delta_t', None)
+    #if delta_t is not None and delta_t != 0:
+    #    print(f"  dt = {delta_t} s")
+    #else:
+    #    delta_t = None
+    #    print(f"  dt not found -- column headers will show step indices")
+    # Extract delta_t from normalization metadata (physical value)
+    norm_meta_path = Path(args.test_dir).parent / "normalization_metadata.json"
+    delta_t = None
+    if norm_meta_path.exists():
+        with open(norm_meta_path) as f:
+            norm_meta = json.load(f)
+        case_key = re.sub(r'_test_with_pos_normalized$', '', sim_name)
+        case_info = norm_meta.get('original_metadata', {}).get('case_info', {})
+        if case_key in case_info:
+            delta_t = case_info[case_key]['delta_t']
+            print(f"  dt = {delta_t:.3e} s (from normalization metadata)")
+        else:
+            print(f"  ⚠ case '{case_key}' not found in normalization metadata")
     else:
-        delta_t = None
+        print(f"  ⚠ normalization_metadata.json not found at {norm_meta_path}")
+    
+    if delta_t is None:
         print(f"  dt not found -- column headers will show step indices")
 
     # Ground truth

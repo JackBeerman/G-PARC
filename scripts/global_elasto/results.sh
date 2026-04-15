@@ -23,21 +23,21 @@ module load apptainer
 # Paths
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 SCRIPT_DIR="$HOME/G-PARC/scripts/eval_elasto"
-DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small"
+DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/p99clip/normalized/small"
 TEST_DIR="$DATA_ROOT/test"
 NORM_STATS="$DATA_ROOT/normalization_stats.json"
-OUTPUT_DIR="/scratch/jtb3sud/elasto_comparison"
+OUTPUT_DIR="/scratch/jtb3sud/elasto_comparison99"
 
 # Model checkpoints
 # config.json is auto-detected from checkpoint directory
-GPARCV2_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
+GPARCV2_CKPT="/scratch/jtb3sud/gparcv2/p99/best_model.pth"
 GPARCV1_CKPT="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/best_model.pth"
 MGKAN_CKPT="/scratch/jtb3sud/delta/elasto/best_model.pth"
 MGN_CKPT="/scratch/jtb3sud/meshgraphnet/elasto/run1/best_model.pt"
 GSAGE_CKPT="/scratch/jtb3sud/graphsage/elasto/best_model.pth"
 
 # Which models to compare (space-separated: gparcv2 gparcv1 mgkan mgn)
-MODELS="gparcv2 gparcv1 mgkan mgn graphsage"
+MODELS="gparcv2 gparcv1"
 
 # Max simulations (set to empty for all)
 MAX_SIMS=

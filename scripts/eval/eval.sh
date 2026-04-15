@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J unified_eval
-#SBATCH -o unified_eval.out
-#SBATCH -e unified_eval.err
+#SBATCH -J unified_eval99
+#SBATCH -o unified_eval99.out
+#SBATCH -e unified_eval99.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -t 4:10:00
@@ -23,7 +23,7 @@ module load apptainer
 # ---- Container & Script ----
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 SCRIPT="$HOME/G-PARC/scripts/eval/eval.py"
-OUTPUT_ROOT="/scratch/jtb3sud/unified_eval_results"
+OUTPUT_ROOT="/scratch/jtb3sud/unified_eval_results99"
 
 # ================================================================
 # SHOCK TUBE
@@ -39,8 +39,10 @@ ST_ROLLOUT=40
 # ================================================================
 # ELASTOPLASTIC
 # ================================================================
-EL_DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small"
-EL_TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/full_test"
+EL_DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/p99clip/normalized/small"
+EL_TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/p99clip/normalized/full_test"
+#EL_DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small"
+#EL_TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/full_test"
 EL_NORM_STATS="$EL_DATA_ROOT/normalization_stats.json"
 EL_GPARCV2="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
 EL_GPARCV1="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/best_model.pth"
@@ -93,7 +95,7 @@ apptainer run --nv "$CONTAINER" eval.py \
         "mgkan:$EL_MGKAN" \
         "mgn:$EL_MGN" \
         "graphsage:$EL_GSAGE" \
-        "gparcv2_nospade:/scratch/jtb3sud/gparcv2/elasto_nospade/best_model.pth" \
+        "gparcv2_nospade:/scratch/jtb3sud/gparcv2/p99/best_model.pth" \
     \
     --rv_test_dir "$RV_TEST_DIR" \
     --rv_extrema "$RV_EXTREMA" \

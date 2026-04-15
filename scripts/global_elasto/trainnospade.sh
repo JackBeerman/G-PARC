@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J elasto_nospade
-#SBATCH -o elasto_nospade.out
-#SBATCH -e elasto_nospade.err
+#SBATCH -J elasto_p99true
+#SBATCH -o elasto_p99true.out
+#SBATCH -e elasto_p99true.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --constraint=a100_80gb
@@ -28,9 +28,9 @@ export MKL_NUM_THREADS=1
 # ============================================================
 # DATA (same as SPADE run)
 # ============================================================
-TRAIN_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/train"
-VAL_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small/val"
-OUTPUT_DIR="/scratch/jtb3sud/gparcv2/elasto_nospade"
+TRAIN_DIR="/scratch/jtb3sud/processed_elasto_plastic/p99clip/normalized/small/train"
+VAL_DIR="/scratch/jtb3sud/processed_elasto_plastic/p99clip/normalized/small/val"
+OUTPUT_DIR="/scratch/jtb3sud/gparcv2/p99true"
 
 CONTAINER="/share/resources/containers/apptainer/pytorch-2.7.0.sif"
 
