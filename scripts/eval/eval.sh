@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH -A sds_baek_energetic
-#SBATCH -J unified_eval99
-#SBATCH -o unified_eval99.out
-#SBATCH -e unified_eval99.err
+#SBATCH -J unified_eval
+#SBATCH -o unified_eval.out
+#SBATCH -e unified_eval.err
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH -t 4:10:00
@@ -39,12 +39,10 @@ ST_ROLLOUT=40
 # ================================================================
 # ELASTOPLASTIC
 # ================================================================
-EL_DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/p99clip/normalized/small"
-EL_TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/p99clip/normalized/full_test"
-#EL_DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small"
-#EL_TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/full_test"
+EL_DATA_ROOT="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/small"
+EL_TEST_DIR="/scratch/jtb3sud/processed_elasto_plastic/global_max/normalized/full_test"
 EL_NORM_STATS="$EL_DATA_ROOT/normalization_stats.json"
-EL_GPARCV2="/scratch/jtb3sud/elasto_graphconv_V2/2hop/best_model.pth"
+EL_GPARCV2="/scratch/jtb3sud/gparcv2/elasto_nospade/best_model.pth"
 EL_GPARCV1="/scratch/jtb3sud/elasto_graphconv_V2/gparcv1/best_model.pth"
 EL_MGKAN="/scratch/jtb3sud/delta/elasto/best_model.pth"
 EL_MGN="/scratch/jtb3sud/meshgraphnet/elasto/run1/best_model.pt"
